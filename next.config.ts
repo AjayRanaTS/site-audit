@@ -1,7 +1,7 @@
+
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   experimental: {
     agentFeedback: true,
   },
@@ -14,6 +14,14 @@ const nextConfig: NextConfig = {
         as: "*.css",
       },
     },
+  },
+
+  outputFileTracingIncludes: {
+    "/api/audit": [
+      "./node_modules/playwright-core/browsers.json",
+      "./node_modules/playwright-core/**/*",
+      "./node_modules/playwright/**/*",
+    ],
   },
 };
 
