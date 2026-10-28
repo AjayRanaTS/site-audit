@@ -124,6 +124,8 @@ const FEATURES: { icon: LucideIcon; title: string; text: string; color: string }
   { icon: Sparkles, title: "Actionable Recommendations", text: "Prioritize Lighthouse opportunities with estimated savings and affected resources.", color: "text-amber-300" },
 ];
 
+const LOADING_STAGES = ["Fetching page", "PageSpeed analysis", "Capturing screenshots"] as const;
+
 function scoreStatus(score: number | null | undefined) {
   if (typeof score !== "number") return { label: "Unavailable", color: "text-slate-400", ring: "#64748b" };
   if (score >= 90) return { label: "Good", color: "text-emerald-300", ring: "#10b981" };
@@ -290,6 +292,7 @@ export default function SpeedAuditDashboard() {
   const [auditedAt, setAuditedAt] = useState<string | null>(null);
   const [lastAudit, setLastAudit] = useState<{ result: AuditResult; auditedAt: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingStageIndex, setLoadingStageIndex] = useState(0);
   const [error, setError] = useState("");
   const [activeSection, setActiveSection] = useState("overview");
   const [collapsed, setCollapsed] = useState(false);
@@ -308,6 +311,17 @@ export default function SpeedAuditDashboard() {
     seo: (findings?.seoFindings?.filter((item) => item.status !== "pass").length ?? 0) + localIssues.length,
     passed: findings?.passed?.length ?? 0,
   };
+
+  useEffect(() => {
+    if (!loading) {
+      setLoadingStageIndex(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLoadingStageIndex((index) => (index + 1) % LOADING_STAGES.length);
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   useEffect(() => {
     if (!result) return;
@@ -411,7 +425,7 @@ export default function SpeedAuditDashboard() {
           <section id="home" className="hero-section relative mx-auto grid max-w-[1320px] items-center gap-12 px-5 pb-16 pt-14 lg:min-h-[690px] lg:grid-cols-[1.05fr_.95fr] lg:px-8 lg:py-20">
             <div className="relative z-10 max-w-2xl">
               <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-indigo-400/20 bg-indigo-400/[0.07] px-3 py-1.5 text-xs text-indigo-100"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />Website performance intelligence</div>
-              <h1 className="max-w-[680px] text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-6xl">Performance insights for a <span className="text-gradient">faster, healthier website.</span></h1>
+              <h1 className="max-w-[680px] text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-5xl">Performance insights for a <span className="text-gradient">faster, healthier website.</span></h1>
               <p className="mt-6 max-w-xl text-base leading-7 text-slate-400">Analyze website speed, Core Web Vitals, SEO, accessibility, and technical issues in one comprehensive report.</p>
 
               <form ref={auditFormRef} onSubmit={runAudit} className="audit-form mt-8 rounded-2xl border border-white/10 bg-[#0b1428]/80 p-2.5 shadow-2xl shadow-black/25 backdrop-blur-xl">
@@ -420,10 +434,9 @@ export default function SpeedAuditDashboard() {
                   <div className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3"><Globe2 size={18} className="shrink-0 text-slate-500" /><input id="audit-url" type="url" inputMode="url" autoComplete="url" spellCheck={false} required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://yourwebsite.com" className="h-12 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500" /></div>
                   <button type="submit" disabled={loading || !url.trim()} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-5 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{loading ? <LoaderCircle size={16} className="animate-spin" /> : <Zap size={16} />}{loading ? "Auditing" : "Run Audit"}</button>
                 </div>
-                <div className="flex items-center justify-between border-t border-white/[0.06] px-3 pb-1 pt-3"><p className="text-[11px] text-slate-500">Mobile & desktop tests · screenshots included</p><DeviceSelector device={device} onChange={setDevice} /></div>
               </form>
 
-              {loading && <div role="status" aria-live="polite" className="mt-4 rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4"><div className="flex items-center justify-between text-xs text-slate-300"><span>Running live audit</span><span>Usually under a minute</span></div><div className="loading-track mt-3"><i /></div><div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-slate-500"><span>Fetching page</span><span className="text-center">PageSpeed analysis</span><span className="text-right">Capturing screenshots</span></div></div>}
+              {loading && <div role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4"><div className="flex items-center justify-between text-xs text-slate-300"><span>Running live audit</span><span>Usually under a minute</span></div><div className="loading-track mt-3"><i /></div><div className="mt-3 min-h-5 text-xs text-cyan-100"><span key={loadingStageIndex} className="loading-stage-text inline-flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />{LOADING_STAGES[loadingStageIndex]}</span></div></div>}
               {error && <div role="alert" className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.06] p-4 text-sm text-rose-100"><span>{error}</span><button onClick={() => runAudit()} className="shrink-0 font-medium underline underline-offset-2">Retry</button></div>}
 
               <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />No stored history</span></div>
