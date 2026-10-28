@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { chromium } from "playwright";
 
 export const maxDuration = 60;
 
@@ -14,6 +15,28 @@ type Check = {
   fix?: string;
 };
 type Metric = { display: string | null; value: number | null };
+type LighthouseFinding = {
+  id: string;
+  title: string;
+  description: string;
+  displayValue: string | null;
+  score: number | null;
+  status: "pass" | "warn" | "fail" | "manual";
+  savingsMs: number;
+  resources: Record<string, string | number | null>[];
+};
+type JsonRecord = Record<string, unknown>;
+type ImageAuditEntry = {
+  src: string;
+  alt: string;
+  width: number | null;
+  height: number | null;
+  format: string;
+  loading: string;
+  status: Status;
+  issues: string[];
+  recommendation: string;
+};
 
 /* ---------- Safe fetching (blocks private addresses) ---------- */
 
@@ -69,7 +92,7 @@ async function safeFetch(startUrl: URL) {
       current = new URL(location, current);
       continue;
     }
-    return { res, finalUrl: current };
+    return { res, finalUrl: current, redirects: i };
   }
   throw new Error("Too many redirects");
 }
@@ -104,12 +127,88 @@ function robotsBlocksAll(robots: string) {
   return false;
 }
 
-function metric(audits: any, id: string): Metric {
-  const a = audits?.[id];
+function asRecord(value: unknown): JsonRecord {
+  return value !== null && typeof value === "object" ? value as JsonRecord : {};
+}
+
+function metric(audits: JsonRecord, id: string): Metric {
+  const a = asRecord(audits[id]);
+  const display = a.displayValue;
+  const value = a.numericValue;
   return {
-    display: a?.displayValue ?? null,
-    value: typeof a?.numericValue === "number" ? a.numericValue : null,
+    display: typeof display === "string" ? display : null,
+    value: typeof value === "number" ? value : null,
   };
+}
+
+function categoryFindings(category: unknown, audits: JsonRecord): LighthouseFinding[] {
+  const categoryRecord = asRecord(category);
+  const references = Array.isArray(categoryRecord.auditRefs) ? categoryRecord.auditRefs : [];
+  return references
+    .map((referenceValue): LighthouseFinding | null => {
+      const reference = asRecord(referenceValue);
+      const id = typeof reference.id === "string" ? reference.id : "";
+      if (!id) return null;
+      const audit = asRecord(audits[id]);
+      if (!Object.keys(audit).length || audit.scoreDisplayMode === "notApplicable") return null;
+
+      const score = typeof audit.score === "number" ? audit.score : null;
+      const details = asRecord(audit.details);
+      const metricSavings = asRecord(audit.metricSavings);
+      const savings = Number(
+        details.overallSavingsMs ??
+        Math.max(Number(metricSavings.LCP) || 0, Number(metricSavings.FCP) || 0)
+      ) || 0;
+      const items = Array.isArray(details.items) ? details.items : [];
+      const resources = items.slice(0, 12).map((itemValue) => {
+        const item = asRecord(itemValue);
+        const node = asRecord(item.node);
+        const values: Record<string, string | number | null> = {};
+        for (const key of ["url", "source", "label", "resourceType", "mimeType", "transferSize", "totalBytes", "wastedBytes", "wastedMs", "duration", "totalTime", "requestStartTime", "value"]) {
+          const value = item[key];
+          if (typeof value === "string" || typeof value === "number") values[key] = value;
+        }
+        if (typeof node.selector === "string") values.selector = node.selector;
+        if (typeof node.snippet === "string") values.snippet = node.snippet;
+        if (typeof node.explanation === "string") values.explanation = node.explanation;
+        return values;
+      });
+
+      return {
+        id,
+        title: typeof audit.title === "string" ? audit.title : id,
+        description: typeof audit.description === "string" ? audit.description : "",
+        displayValue: typeof audit.displayValue === "string" ? audit.displayValue : null,
+        score,
+        status: audit.scoreDisplayMode === "manual" ? "manual" : score === null ? "warn" : score >= 0.9 ? "pass" : score < 0.5 ? "fail" : "warn",
+        savingsMs: Math.round(savings),
+        resources,
+      } satisfies LighthouseFinding;
+    })
+    .filter((finding): finding is LighthouseFinding => finding !== null);
+}
+
+function fieldMetric(experience: unknown, key: string, unit: "ms" | "cls"): Metric {
+  const metrics = asRecord(asRecord(experience).metrics);
+  const value = asRecord(metrics[key]).percentile;
+  const percentile = typeof value === "number" ? value : null;
+  if (percentile === null) return { display: null, value: null };
+  if (unit === "cls") {
+    const cls = percentile / 100;
+    return { display: cls.toFixed(3), value: cls };
+  }
+  return { display: `${(percentile / 1000).toFixed(1)} s`, value: percentile };
+}
+
+function detectImageFormat(src: string) {
+  const value = (src || "").split("?")[0].split("#")[0].toLowerCase();
+  if (value.includes("data:image/")) {
+    return value.match(/data:image\/([a-z0-9.+-]+)/i)?.[1] || "data";
+  }
+  if (/\.(avif|webp|png|jpg|jpeg|gif|svg|bmp|ico)$/.test(value)) {
+    return value.match(/\.(avif|webp|png|jpg|jpeg|gif|svg|bmp|ico)$/)?.[1] || "unknown";
+  }
+  return "unknown";
 }
 
 async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
@@ -119,29 +218,37 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
   const api = new URL("https://www.googleapis.com/pagespeedonline/v5/runPagespeed");
   api.searchParams.set("url", url);
   api.searchParams.set("strategy", strategy);
-  api.searchParams.set("category", "performance");
+  for (const category of ["performance", "accessibility", "best-practices", "seo"]) {
+    api.searchParams.append("category", category);
+  }
   api.searchParams.set("key", key);
 
   try {
     const res = await fetch(api, { signal: AbortSignal.timeout(50000) });
-    const data = await res.json();
+    const data = asRecord(await res.json());
     if (!res.ok) {
-      return { error: data?.error?.message || "PageSpeed request failed" };
+      const errorMessage = asRecord(data.error).message;
+      return { error: typeof errorMessage === "string" ? errorMessage : "PageSpeed request failed" };
     }
 
-    const audits = data.lighthouseResult?.audits ?? {};
-    const raw = data.lighthouseResult?.categories?.performance?.score;
+    const lighthouse = asRecord(data.lighthouseResult);
+    const audits = asRecord(lighthouse.audits);
+    const categories = asRecord(lighthouse.categories);
+    const configSettings = asRecord(lighthouse.configSettings);
+    const raw = asRecord(categories.performance).score;
+    const accessibilityScore = asRecord(categories.accessibility).score;
+    const bestPracticesScore = asRecord(categories["best-practices"]).score;
 
-    // Speed tips: audits that report time savings
-    const tips = (Object.values(audits) as any[])
-      .map((a) => {
-        const savings =
-          a?.details?.overallSavingsMs ??
-          Math.max(a?.metricSavings?.LCP ?? 0, a?.metricSavings?.FCP ?? 0);
+    const tips = Object.values(audits)
+      .map((auditValue) => {
+        const audit = asRecord(auditValue);
+        const details = asRecord(audit.details);
+        const metricSavings = asRecord(audit.metricSavings);
+        const savings = details.overallSavingsMs ?? Math.max(Number(metricSavings.LCP) || 0, Number(metricSavings.FCP) || 0);
         return {
-          title: a?.title as string | undefined,
+          title: typeof audit.title === "string" ? audit.title : undefined,
           savingsMs: Number(savings) || 0,
-          score: a?.score as number | null | undefined,
+          score: typeof audit.score === "number" ? audit.score : null,
         };
       })
       .filter(
@@ -154,19 +261,112 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
       .slice(0, 5)
       .map((t) => ({ title: t.title as string, savingsMs: Math.round(t.savingsMs) }));
 
+    const performanceInsight = [
+      typeof raw === "number" && raw < 0.7 ? "The page is under the usual performance target for organic visibility." : null,
+      typeof asRecord(audits["largest-contentful-paint"]).numericValue === "number" && Number(asRecord(audits["largest-contentful-paint"]).numericValue) > 2500 ? "Largest Contentful Paint is slow enough to delay the page feeling ready to use." : null,
+      typeof asRecord(audits["total-blocking-time"]).numericValue === "number" && Number(asRecord(audits["total-blocking-time"]).numericValue) > 200 ? "There is a measurable blocking period during page load." : null,
+      typeof asRecord(audits["cumulative-layout-shift"]).numericValue === "number" && Number(asRecord(audits["cumulative-layout-shift"]).numericValue) > 0.1 ? "Layout shifts are likely making the page look unstable while it loads." : null,
+    ].filter(Boolean) as string[];
+
+    const performanceFindings = categoryFindings(categories.performance, audits);
+    const passed = Object.entries(categories).flatMap(([categoryName, category]) =>
+      categoryFindings(category, audits)
+        .filter((finding) => finding.status === "pass")
+        .map((finding) => ({ ...finding, category: categoryName }))
+    );
+    const fieldExperience = data.loadingExperience ?? data.originLoadingExperience;
+    const filmstripDetails = asRecord(asRecord(audits["screenshot-thumbnails"]).details);
+    const filmstrip = (Array.isArray(filmstripDetails.items) ? filmstripDetails.items : [])
+      .slice(0, 8)
+      .flatMap((item) => {
+        const frame = asRecord(item);
+        return typeof frame.data === "string" ? [{ data: frame.data, timing: typeof frame.timing === "number" ? frame.timing : null }] : [];
+      });
+    const requestDetails = asRecord(asRecord(audits["network-requests"]).details);
+    const requests = Array.isArray(requestDetails.items) ? requestDetails.items : [];
+    const totalTransferBytes = requests.reduce((sum, item) => sum + (Number(asRecord(item).transferSize) || 0), 0);
+
     return {
       score: typeof raw === "number" ? Math.round(raw * 100) : null,
+      accessibility: typeof accessibilityScore === "number" ? Math.round(accessibilityScore * 100) : null,
+      bestPractices: typeof bestPracticesScore === "number" ? Math.round(bestPracticesScore * 100) : null,
+      seo: typeof asRecord(categories.seo).score === "number" ? Math.round(Number(asRecord(categories.seo).score) * 100) : null,
       metrics: {
         fcp: metric(audits, "first-contentful-paint"),
         lcp: metric(audits, "largest-contentful-paint"),
         tbt: metric(audits, "total-blocking-time"),
         cls: metric(audits, "cumulative-layout-shift"),
         si: metric(audits, "speed-index"),
+        inp: metric(audits, "interaction-to-next-paint"),
+        ttfb: metric(audits, "server-response-time"),
+      },
+      fieldMetrics: {
+        lcp: fieldMetric(fieldExperience, "LARGEST_CONTENTFUL_PAINT_MS", "ms"),
+        inp: fieldMetric(fieldExperience, "EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", "ms"),
+        cls: fieldMetric(fieldExperience, "CUMULATIVE_LAYOUT_SHIFT_SCORE", "cls"),
+        ttfb: fieldMetric(fieldExperience, "EXPERIMENTAL_TIME_TO_FIRST_BYTE", "ms"),
+      },
+      fieldDataSource: data.loadingExperience ? "url" : data.originLoadingExperience ? "origin" : null,
+      opportunities: performanceFindings.filter((finding) => finding.status !== "pass" && finding.savingsMs > 0),
+      diagnostics: performanceFindings.filter((finding) => finding.status !== "pass" && finding.savingsMs === 0),
+      accessibilityFindings: categoryFindings(categories.accessibility, audits),
+      bestPracticeFindings: categoryFindings(categories["best-practices"], audits),
+      seoFindings: categoryFindings(categories.seo, audits),
+      passed,
+      filmstrip,
+      technical: {
+        finalUrl: lighthouse.finalDisplayedUrl ?? url,
+        requestedUrl: lighthouse.requestedUrl ?? url,
+        lighthouseVersion: lighthouse.lighthouseVersion ?? null,
+        fetchTime: lighthouse.fetchTime ?? null,
+        formFactor: configSettings.formFactor ?? strategy,
+        throttling: configSettings.throttling ?? null,
+        environment: lighthouse.environment ?? null,
+        requestCount: requests.length || null,
+        transferBytes: totalTransferBytes || null,
       },
       tips,
+      insight: performanceInsight,
     };
   } catch {
     return { error: "The speed test timed out or failed" };
+  }
+}
+
+async function capturePageScreenshot(url: URL, viewport: { width: number; height: number }, deviceName: "mobile" | "desktop") {
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage({
+      viewport,
+      userAgent:
+        deviceName === "mobile"
+          ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+          : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      deviceScaleFactor: 2,
+      isMobile: deviceName === "mobile",
+      hasTouch: deviceName === "mobile",
+    });
+
+    await page.goto(url.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+
+    try {
+      await page.waitForLoadState("networkidle", { timeout: 10000 });
+    } catch {
+      // Ignore slow or blocked network activity when the page is otherwise ready.
+    }
+
+    const image = await page.screenshot({
+      type: "png",
+      fullPage: false,
+    });
+
+    return `data:image/png;base64,${image.toString("base64")}`;
+  } finally {
+    await browser.close();
   }
 }
 
@@ -188,7 +388,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { res, finalUrl } = await safeFetch(parsed);
+    const { res, finalUrl, redirects } = await safeFetch(parsed);
     const html = (await res.text()).slice(0, 2_000_000);
     const $ = cheerio.load(html);
 
@@ -200,6 +400,11 @@ export async function POST(request: Request) {
       fetchSmall(new URL("/sitemap.xml", finalUrl.origin)),
       fetchSmall(new URL("/sitemap_index.xml", finalUrl.origin)),
     ]);
+
+    const screenshots = await Promise.all([
+      capturePageScreenshot(finalUrl, { width: 390, height: 844 }, "mobile"),
+      capturePageScreenshot(finalUrl, { width: 1440, height: 900 }, "desktop"),
+    ]).catch(() => [undefined, undefined] as [string | undefined, string | undefined]);
 
     const checks: Check[] = [];
     const add = (
@@ -448,21 +653,103 @@ export async function POST(request: Request) {
       add("schema", "Structured data", "pass", `${ldCount} JSON-LD block${ldCount > 1 ? "s" : ""}`);
     }
 
-    /* Image alt text */
-    const imgs = $("img");
-    const imgTotal = imgs.length;
-    const imgMissing = imgs.filter((_, el) => $(el).attr("alt") === undefined).length;
-    if (imgTotal === 0) {
-      add("alt", "Image alt text", "pass", "No images found");
-    } else if (imgMissing === 0) {
-      add("alt", "Image alt text", "pass", `All ${imgTotal} images have alt text`);
+    /* Heading structure */
+    const headingOrder = Array.from($("h1, h2, h3, h4, h5, h6")).map((el) => Number((el.tagName || "").replace("H", "")) || 0);
+    const hasSkippedHeading = headingOrder.some((level, idx) => idx > 0 && level > headingOrder[idx - 1] + 1);
+    if (hasSkippedHeading) {
+      add(
+        "heading-structure",
+        "Heading structure",
+        "warn",
+        "Headings jump levels",
+        "Keep heading levels in order (for example H1 > H2 > H3) so the content hierarchy is easier to follow for readers and crawlers."
+      );
+    } else {
+      add("heading-structure", "Heading structure", "pass", "Heading order is consistent");
+    }
+
+    /* Social follow-up tags */
+    const twitterTags = ["twitter:card", "twitter:title", "twitter:description"]; 
+    const missingTwitterTags = twitterTags.filter((p) => !$(`meta[name="${p}"]`).length && !$(`meta[property="${p}"]`).length);
+    if (missingTwitterTags.length > 0) {
+      add(
+        "twitter",
+        "Social sharing tags",
+        "warn",
+        `Missing ${missingTwitterTags.join(", ")}`,
+        "Add basic Twitter card metadata so previews are stronger when the page is shared in social feeds."
+      );
+    } else {
+      add("twitter", "Social sharing tags", "pass", "Twitter card metadata is present");
+    }
+
+    /* Image audit */
+    const imageEntries: ImageAuditEntry[] = $("img")
+      .toArray()
+      .map((el) => {
+        const $img = $(el);
+        const rawSrc = ($img.attr("src") ?? "").trim();
+        const src = rawSrc ? new URL(rawSrc, finalUrl).href : "";
+        const alt = clean($img.attr("alt") ?? "");
+        const width = Number($img.attr("width")) || null;
+        const height = Number($img.attr("height")) || null;
+        const loading = ($img.attr("loading") ?? "not set").toLowerCase();
+        const format = detectImageFormat(rawSrc || "");
+        const issues: string[] = [];
+
+        if (!rawSrc) issues.push("Image source is missing.");
+        if (!alt) issues.push("Alt text is missing for accessibility and image search.");
+        if (loading === "not set") issues.push("The image is not explicitly lazy-loaded or eager-loaded.");
+        if (loading === "eager" && !src.includes("logo") && !src.includes("hero")) {
+          issues.push("This image is eagerly loaded even though it may be below the fold.");
+        }
+        if ((width && width > 2000) || (height && height > 2000)) {
+          issues.push("The image is oversized for its layout and can slow the page down.");
+        }
+        if (format === "svg" && !alt) {
+          issues.push("SVG images should include accessible text or a proper title/description.");
+        }
+
+        const status: Status = issues.length === 0 ? "pass" : issues.length >= 3 ? "fail" : "warn";
+        const recommendation =
+          issues.length === 0
+            ? "This image is well-formed and should load efficiently with the current markup."
+            : issues.length >= 3
+              ? "Reduce the image size, add alt text, and lazy-load non-critical images to improve page speed and accessibility."
+              : "Add the missing metadata and compress the asset where possible so the page stays light and accessible.";
+
+        return {
+          src: src || rawSrc || "missing-image",
+          alt: alt || "No alt text",
+          width,
+          height,
+          format,
+          loading: loading === "not set" ? "auto" : loading,
+          status,
+          issues,
+          recommendation,
+        };
+      })
+      .filter((img) => img.src !== "missing-image");
+
+    const imageProblems = imageEntries.filter((img) => img.status !== "pass");
+    if (imageEntries.length === 0) {
+      add(
+        "image-audit",
+        "Images",
+        "warn",
+        "No images found",
+        "There are no visible images on this page. Add relevant visuals only when they support the content."
+      );
+    } else if (imageProblems.length === 0) {
+      add("image-audit", "Images", "pass", `${imageEntries.length} image${imageEntries.length > 1 ? "s" : ""} look healthy`);
     } else {
       add(
-        "alt",
-        "Image alt text",
-        imgMissing >= imgTotal / 2 ? "fail" : "warn",
-        `${imgMissing} of ${imgTotal} images have no alt text`,
-        "Add short, descriptive alt text to every meaningful image. It helps accessibility and image search."
+        "image-audit",
+        "Images",
+        imageProblems.length >= imageEntries.length / 2 ? "fail" : "warn",
+        `${imageProblems.length} of ${imageEntries.length} images need attention`,
+        "Review image sizes, lazy-loading, and alt text to improve accessibility and delivery speed."
       );
     }
 
@@ -513,7 +800,16 @@ export async function POST(request: Request) {
     }
 
     /* Favicon */
-    if ($('link[rel~="icon"]').length === 0) {
+    const faviconHref = $('link[rel~="icon"]').first().attr("href");
+    let favicon: string | null = null;
+    if (faviconHref) {
+      try {
+        favicon = new URL(faviconHref, finalUrl).href;
+      } catch {
+        favicon = null;
+      }
+    }
+    if (!favicon) {
       add(
         "favicon",
         "Favicon",
@@ -576,13 +872,21 @@ export async function POST(request: Request) {
     return NextResponse.json({
       url: finalUrl.href,
       status: res.status,
+      redirects,
       seoScore,
+      favicon,
       checks,
+      images: imageEntries,
+      screenshots: {
+        mobile: screenshots[0],
+        desktop: screenshots[1],
+      },
       performance: { mobile, desktop },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Could not fetch this URL";
     return NextResponse.json(
-      { error: err?.message || "Could not fetch this URL" },
+      { error: message },
       { status: 400 }
     );
   }
