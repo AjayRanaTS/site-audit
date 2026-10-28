@@ -17,6 +17,7 @@ import {
   Info,
   LayoutDashboard,
   LoaderCircle,
+  LogOut,
   Menu,
   Monitor,
   PanelLeftClose,
@@ -33,6 +34,9 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { User } from "@supabase/supabase-js";
+import AuthModal from "@/components/auth-modal";
+import { getSupabaseClient } from "@/lib/supabase/client";
 
 type Device = "mobile" | "desktop";
 type AuditStatus = "pass" | "warn" | "fail" | "manual";
@@ -125,6 +129,8 @@ const FEATURES: { icon: LucideIcon; title: string; text: string; color: string }
 ];
 
 const LOADING_STAGES = ["Fetching page", "PageSpeed analysis", "Capturing screenshots"] as const;
+const FREE_GUEST_AUDITS = 3;
+const GUEST_AUDIT_STORAGE_KEY = "speedaudit-guest-audits";
 
 function scoreStatus(score: number | null | undefined) {
   if (typeof score !== "number") return { label: "Unavailable", color: "text-slate-400", ring: "#64748b" };
@@ -289,8 +295,13 @@ export default function SpeedAuditDashboard() {
   const [url, setUrl] = useState("");
   const [device, setDevice] = useState<Device>("mobile");
   const [result, setResult] = useState<AuditResult | null>(null);
+  const [showCapturedPreviews, setShowCapturedPreviews] = useState(false);
   const [auditedAt, setAuditedAt] = useState<string | null>(null);
   const [lastAudit, setLastAudit] = useState<{ result: AuditResult; auditedAt: string } | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [guestAudits, setGuestAudits] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingStageIndex, setLoadingStageIndex] = useState(0);
   const [error, setError] = useState("");
@@ -313,15 +324,42 @@ export default function SpeedAuditDashboard() {
   };
 
   useEffect(() => {
-    if (!loading) {
-      setLoadingStageIndex(0);
-      return;
+    const supabase = getSupabaseClient();
+    let active = true;
+    const subscription = supabase?.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    }).data.subscription;
+
+    async function initializeAuth() {
+      const storedCount = Number(window.localStorage.getItem(GUEST_AUDIT_STORAGE_KEY)) || 0;
+      const sessionResult = supabase ? await supabase.auth.getSession() : await Promise.resolve(null);
+      if (!active) return;
+      setGuestAudits(Math.min(storedCount, FREE_GUEST_AUDITS));
+      setUser(sessionResult?.data.session?.user ?? null);
+      setAuthReady(true);
     }
+
+    void initializeAuth();
+
+    return () => {
+      active = false;
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loading) return;
     const timer = window.setInterval(() => {
       setLoadingStageIndex((index) => (index + 1) % LOADING_STAGES.length);
     }, 1600);
     return () => window.clearInterval(timer);
   }, [loading]);
+
+  useEffect(() => {
+    if (!showCapturedPreviews) return;
+    const timer = window.setTimeout(() => setShowCapturedPreviews(false), 3200);
+    return () => window.clearTimeout(timer);
+  }, [showCapturedPreviews]);
 
   useEffect(() => {
     if (!result) return;
@@ -337,10 +375,16 @@ export default function SpeedAuditDashboard() {
 
   async function runAudit(event?: FormEvent) {
     event?.preventDefault();
-    if (!url.trim() || loading) return;
+    if (!url.trim() || loading || !authReady) return;
+    if (!user && guestAudits >= FREE_GUEST_AUDITS) {
+      setAuthModalOpen(true);
+      return;
+    }
+    setLoadingStageIndex(0);
     setLoading(true);
     setError("");
     setResult(null);
+    setShowCapturedPreviews(false);
     try {
       const response = await fetch("/api/audit", {
         method: "POST",
@@ -353,7 +397,13 @@ export default function SpeedAuditDashboard() {
       if (!data.performance || !data.url || !Array.isArray(data.checks)) throw new Error("The audit returned incomplete report data. Please retry.");
       const completedResult = data as AuditResult;
       const completedAt = new Date().toISOString();
+      if (!user) {
+        const nextCount = Math.min(guestAudits + 1, FREE_GUEST_AUDITS);
+        window.localStorage.setItem(GUEST_AUDIT_STORAGE_KEY, String(nextCount));
+        setGuestAudits(nextCount);
+      }
       setResult(completedResult);
+      setShowCapturedPreviews(true);
       setUrl(completedResult.url);
       setAuditedAt(completedAt);
       setLastAudit({ result: completedResult, auditedAt: completedAt });
@@ -365,6 +415,13 @@ export default function SpeedAuditDashboard() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function signOut() {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) setError(signOutError.message);
   }
 
   function navigateToSection(id: string) {
@@ -412,13 +469,13 @@ export default function SpeedAuditDashboard() {
   return (
     <main id="top" className="min-h-screen bg-[#080f20] text-slate-100">
       <div className="ambient-lines" aria-hidden="true"><i /><i /><i /></div>
-      {!result ? (
+      {!result || showCapturedPreviews ? (
         <>
           <header className="site-header relative z-10 border-b border-white/[0.07]">
             <div className="mx-auto flex min-h-[76px] max-w-[1320px] items-center justify-between gap-4 px-5 lg:px-8">
               <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">SpeedAudit</span></a>
               <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#recent" className="hover:text-white">Reports</a><a href="#dashboard" className="hover:text-white">Dashboard</a></nav>
-              <button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110"><Zap size={15} />Start audit</button>
+              <div className="flex shrink-0 items-center gap-2">{user ? <button onClick={() => void signOut()} className="hidden max-w-36 truncate rounded-lg px-2 py-2 text-xs text-slate-400 hover:text-white sm:block" title={user.email ?? "Signed in"}>{user.email ?? "Signed in"} · Sign out</button> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110"><Zap size={15} />Start audit</button></div>
             </div>
           </header>
 
@@ -432,21 +489,21 @@ export default function SpeedAuditDashboard() {
                 <label htmlFor="audit-url" className="sr-only">Website URL</label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <div className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3"><Globe2 size={18} className="shrink-0 text-slate-500" /><input id="audit-url" type="url" inputMode="url" autoComplete="url" spellCheck={false} required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://yourwebsite.com" className="h-12 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500" /></div>
-                  <button type="submit" disabled={loading || !url.trim()} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-5 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{loading ? <LoaderCircle size={16} className="animate-spin" /> : <Zap size={16} />}{loading ? "Auditing" : "Run Audit"}</button>
+                  <button type="submit" disabled={loading || !authReady || !url.trim()} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-5 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{loading ? <LoaderCircle size={16} className="animate-spin" /> : <Zap size={16} />}{loading ? "Auditing" : "Run Audit"}</button>
                 </div>
               </form>
 
               {loading && <div role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4"><div className="flex items-center justify-between text-xs text-slate-300"><span>Running live audit</span><span>Usually under a minute</span></div><div className="loading-track mt-3"><i /></div><div className="mt-3 min-h-5 text-xs text-cyan-100"><span key={loadingStageIndex} className="loading-stage-text inline-flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />{LOADING_STAGES[loadingStageIndex]}</span></div></div>}
               {error && <div role="alert" className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.06] p-4 text-sm text-rose-100"><span>{error}</span><button onClick={() => runAudit()} className="shrink-0 font-medium underline underline-offset-2">Retry</button></div>}
 
-              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />No stored history</span></div>
+              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />{user ? `Signed in${user.email ? ` as ${user.email}` : ""}` : `${Math.max(0, FREE_GUEST_AUDITS - guestAudits)} free audits left`}</span></div>
             </div>
 
             <div className="device-showcase relative mx-auto grid w-full max-w-[690px] grid-cols-[.65fr_1.35fr] items-end gap-3 sm:gap-6 lg:gap-4">
-              <div className="relative z-10"><DevicePreview device="mobile" /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">Mobile preview</p></div>
-              <div className="relative"><DevicePreview device="desktop" /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">Desktop preview</p></div>
+              <div className="relative z-10"><DevicePreview device="mobile" screenshot={showCapturedPreviews ? result?.screenshots?.mobile : undefined} /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">{showCapturedPreviews && result?.screenshots?.mobile ? "Mobile · captured" : "Mobile preview"}</p></div>
+              <div className="relative"><DevicePreview device="desktop" screenshot={showCapturedPreviews ? result?.screenshots?.desktop : undefined} /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">{showCapturedPreviews && result?.screenshots?.desktop ? "Desktop · captured" : "Desktop preview"}</p></div>
               <div className="absolute -inset-x-10 bottom-10 -z-10 h-48 rounded-full bg-indigo-500/[0.08] blur-3xl" />
-              <p className="col-span-2 mt-1 text-center text-[10px] text-slate-600">Illustrative previews only. Real device screenshots appear after an audit.</p>
+              <p className="col-span-2 mt-1 text-center text-[10px] text-slate-600">{showCapturedPreviews ? "Captured screenshots are shown where available. Opening your full report…" : "Illustrative previews only. Real device screenshots appear after an audit."}</p>
             </div>
           </section>
 
@@ -467,7 +524,7 @@ export default function SpeedAuditDashboard() {
           <div className="min-w-0 flex-1">
             <div className="glass-panel sticky top-3 z-30 mb-5 flex min-h-14 items-center justify-between gap-3 rounded-xl px-3 py-2 sm:px-4">
               <div className="flex min-w-0 items-center gap-2"><button onClick={() => setDrawerOpen(true)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Open report navigation"><Menu size={19} /></button><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{result.url}</p><p className="hidden text-[11px] text-slate-500 sm:block">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit completed"} · {result.status} response · {result.redirects ?? "n/a"} redirects</p></div></div>
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2"><button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <button onClick={() => void signOut()} title="Sign out" aria-label="Sign out" className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08]"><LogOut size={14} /><span className="hidden sm:inline">Sign out</span></button>}<button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
             </div>
 
             <div className="space-y-5">
@@ -506,6 +563,7 @@ export default function SpeedAuditDashboard() {
         </div>
       )}
       {screenshotOpen && <div role="dialog" aria-modal="true" aria-label="Enlarged screenshot" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4" onClick={() => setScreenshotOpen(null)}><button onClick={() => setScreenshotOpen(null)} className="absolute right-5 top-5 rounded-lg bg-white/10 p-2 text-white" aria-label="Close screenshot"><X size={20} /></button><img src={screenshotOpen} alt="Enlarged audit screenshot" className="max-h-[92vh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} /></div>}
+      <AuthModal open={authModalOpen} onClose={() => setAuthModalOpen(false)} onAuthenticated={(authenticatedUser) => setUser(authenticatedUser)} />
     </main>
   );
 }
