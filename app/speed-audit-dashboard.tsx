@@ -7,6 +7,7 @@ import {
   Accessibility,
   CalendarClock,
   Check,
+  ClipboardList,
   ChevronDown,
   CircleCheck,
   Download,
@@ -28,12 +29,14 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
+  UserRound,
   X,
   Zap,
   type LucideIcon,
 } from "lucide-react";
 import Image from "next/image";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import AuthModal from "@/components/auth-modal";
 import { getSupabaseClient } from "@/lib/supabase/client";
@@ -129,8 +132,115 @@ const FEATURES: { icon: LucideIcon; title: string; text: string; color: string }
 ];
 
 const LOADING_STAGES = ["Fetching page", "PageSpeed analysis", "Capturing screenshots"] as const;
-const FREE_GUEST_AUDITS = 3;
-const GUEST_AUDIT_STORAGE_KEY = "speedaudit-guest-audits";
+const PENDING_AUDIT_STORAGE_KEY = "speedaudit-pending-audit-url";
+
+const PRICING_PLANS = [
+  { name: "Free", price: 0, audits: "3/month", pdf: false, doc: false, features: ["Basic features"] },
+  { name: "Starter", price: 9, audits: "15/month", pdf: true, doc: true, features: ["All Free features"] },
+  { name: "Pro", price: 19, audits: "40/month", pdf: true, doc: true, features: ["All Free and Starter features"] },
+] as const;
+
+function getUserInitials(user: User) {
+  const metadata = user.user_metadata;
+  const firstName = typeof metadata.first_name === "string" ? metadata.first_name.trim() : "";
+  const lastName = typeof metadata.last_name === "string" ? metadata.last_name.trim() : "";
+  const fullName = [firstName, lastName].filter(Boolean).join(" ") ||
+    (typeof metadata.full_name === "string" ? metadata.full_name : "") ||
+    (typeof metadata.name === "string" ? metadata.name : "");
+  const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (nameParts.length > 1) return `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase();
+  if (nameParts.length === 1) return nameParts[0].slice(0, 2).toUpperCase();
+  return user.email?.trim().slice(0, 1).toUpperCase() || "U";
+}
+
+function getUserDisplayName(user: User) {
+  const metadata = user.user_metadata;
+  const firstName = typeof metadata.first_name === "string" ? metadata.first_name.trim() : "";
+  const lastName = typeof metadata.last_name === "string" ? metadata.last_name.trim() : "";
+  const registeredName = [firstName, lastName].filter(Boolean).join(" ");
+  if (registeredName) return registeredName;
+  if (typeof metadata.full_name === "string" && metadata.full_name.trim()) return metadata.full_name.trim();
+  if (typeof metadata.name === "string" && metadata.name.trim()) return metadata.name.trim();
+  return user.email ?? "Your account";
+}
+
+function ProfileMenu({ user, onSignOut, onMyTests }: { user: User; onSignOut: () => void; onMyTests: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const initials = getUserInitials(user);
+  const displayName = getUserDisplayName(user);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={menuRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((isOpen) => !isOpen)}
+        className="flex h-10 w-10 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-xs font-semibold tracking-wide text-cyan-100 transition hover:border-cyan-200/60 hover:brightness-110"
+        title={`${displayName} account menu`}
+        aria-label={`${displayName} account menu`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {initials}
+      </button>
+      {open && (
+        <div role="menu" aria-label="Account menu" className="absolute right-0 top-12 z-50 w-56 overflow-hidden rounded-xl border border-white/10 bg-[#0b1428] p-1.5 shadow-2xl shadow-black/50">
+          <div className="border-b border-white/[0.08] px-3 py-2.5">
+            <p className="truncate text-sm font-medium text-white">{displayName}</p>
+            {user.email && <p className="mt-0.5 truncate text-xs text-slate-400">{user.email}</p>}
+          </div>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); setProfileOpen(true); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
+            <UserRound size={16} className="text-slate-400" />My profile
+          </button>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); onMyTests(); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
+            <ClipboardList size={16} className="text-slate-400" />My tests
+          </button>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); onSignOut(); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-rose-200 transition hover:bg-rose-400/[0.08]">
+            <LogOut size={16} />Logout
+          </button>
+        </div>
+      )}
+      {profileOpen && (
+        <div role="presentation" className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030712]/75 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="profile-title" className="glass-panel w-full max-w-sm rounded-2xl p-5 shadow-2xl sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-sm font-semibold text-cyan-100">{initials}</div>
+                <h2 id="profile-title" className="text-lg font-semibold text-white">My profile</h2>
+                <p className="mt-1 text-sm text-slate-400">Your SpeedAudit account details.</p>
+              </div>
+              <button type="button" onClick={() => setProfileOpen(false)} aria-label="Close profile" className="rounded-lg p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"><X size={18} /></button>
+            </div>
+            <dl className="mt-5 space-y-3 rounded-xl border border-white/[0.08] bg-slate-950/25 p-4">
+              <div><dt className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Name</dt><dd className="mt-1 text-sm text-slate-200">{displayName}</dd></div>
+              <div><dt className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Email</dt><dd className="mt-1 break-all text-sm text-slate-200">{user.email ?? "Not available"}</dd></div>
+            </dl>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function scoreStatus(score: number | null | undefined) {
   if (typeof score !== "number") return { label: "Unavailable", color: "text-slate-400", ring: "#64748b" };
@@ -292,6 +402,7 @@ function ResultSidebar({ active, collapsed, setCollapsed, drawerOpen, setDrawerO
 }
 
 export default function SpeedAuditDashboard() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [device, setDevice] = useState<Device>("mobile");
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -301,7 +412,6 @@ export default function SpeedAuditDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [guestAudits, setGuestAudits] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingStageIndex, setLoadingStageIndex] = useState(0);
   const [error, setError] = useState("");
@@ -326,16 +436,24 @@ export default function SpeedAuditDashboard() {
   useEffect(() => {
     const supabase = getSupabaseClient();
     let active = true;
+    const restorePendingAuditUrl = () => {
+      const pendingAuditUrl = window.sessionStorage.getItem(PENDING_AUDIT_STORAGE_KEY);
+      if (!pendingAuditUrl) return;
+      window.sessionStorage.removeItem(PENDING_AUDIT_STORAGE_KEY);
+      setUrl(pendingAuditUrl);
+    };
     const subscription = supabase?.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      const authenticatedUser = session?.user ?? null;
+      setUser(authenticatedUser);
+      if (authenticatedUser) restorePendingAuditUrl();
     }).data.subscription;
 
     async function initializeAuth() {
-      const storedCount = Number(window.localStorage.getItem(GUEST_AUDIT_STORAGE_KEY)) || 0;
       const sessionResult = supabase ? await supabase.auth.getSession() : await Promise.resolve(null);
       if (!active) return;
-      setGuestAudits(Math.min(storedCount, FREE_GUEST_AUDITS));
-      setUser(sessionResult?.data.session?.user ?? null);
+      const authenticatedUser = sessionResult?.data.session?.user ?? null;
+      setUser(authenticatedUser);
+      if (authenticatedUser) restorePendingAuditUrl();
       setAuthReady(true);
     }
 
@@ -373,13 +491,30 @@ export default function SpeedAuditDashboard() {
     return () => observer.disconnect();
   }, [result, device]);
 
-  async function runAudit(event?: FormEvent) {
+  const runAudit = useCallback(async (event?: FormEvent, auditUrl = url) => {
     event?.preventDefault();
-    if (!url.trim() || loading || !authReady) return;
-    if (!user && guestAudits >= FREE_GUEST_AUDITS) {
-      setAuthModalOpen(true);
+    if (!auditUrl.trim() || loading || !authReady) return;
+    if (!user) {
+      window.sessionStorage.setItem(PENDING_AUDIT_STORAGE_KEY, auditUrl);
+      router.push("/login");
       return;
     }
+    let accessToken: string | undefined;
+    try {
+      const supabase = getSupabaseClient();
+      const sessionResult = await supabase?.auth.getSession();
+      if (sessionResult?.error) throw sessionResult.error;
+      accessToken = sessionResult?.data.session?.access_token;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to verify your sign-in. Please try again.");
+      return;
+    }
+    if (!accessToken) {
+      window.sessionStorage.setItem(PENDING_AUDIT_STORAGE_KEY, auditUrl);
+      router.push("/login");
+      return;
+    }
+
     setLoadingStageIndex(0);
     setLoading(true);
     setError("");
@@ -388,20 +523,20 @@ export default function SpeedAuditDashboard() {
     try {
       const response = await fetch("/api/audit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ url: auditUrl }),
         signal: AbortSignal.timeout(58_000),
       });
       const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        window.sessionStorage.setItem(PENDING_AUDIT_STORAGE_KEY, auditUrl);
+        router.push("/login");
+        return;
+      }
       if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : "The audit request failed.");
       if (!data.performance || !data.url || !Array.isArray(data.checks)) throw new Error("The audit returned incomplete report data. Please retry.");
       const completedResult = data as AuditResult;
       const completedAt = new Date().toISOString();
-      if (!user) {
-        const nextCount = Math.min(guestAudits + 1, FREE_GUEST_AUDITS);
-        window.localStorage.setItem(GUEST_AUDIT_STORAGE_KEY, String(nextCount));
-        setGuestAudits(nextCount);
-      }
       setResult(completedResult);
       setShowCapturedPreviews(true);
       setUrl(completedResult.url);
@@ -415,13 +550,30 @@ export default function SpeedAuditDashboard() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [authReady, loading, router, user, url]);
 
   async function signOut() {
     const supabase = getSupabaseClient();
-    if (!supabase) return;
+    if (!supabase) {
+      setError("Authentication is not configured.");
+      return;
+    }
     const { error: signOutError } = await supabase.auth.signOut();
-    if (signOutError) setError(signOutError.message);
+    if (signOutError) {
+      setError(signOutError.message);
+      return;
+    }
+    setResult(null);
+    setShowCapturedPreviews(false);
+    router.replace("/");
+  }
+
+  function showMyTests() {
+    setResult(null);
+    setShowCapturedPreviews(false);
+    window.setTimeout(() => {
+      document.getElementById("recent")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   function navigateToSection(id: string) {
@@ -474,8 +626,8 @@ export default function SpeedAuditDashboard() {
           <header className="site-header relative z-10 border-b border-white/[0.07]">
             <div className="mx-auto flex min-h-[76px] max-w-[1320px] items-center justify-between gap-4 px-5 lg:px-8">
               <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">SpeedAudit</span></a>
-              <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#recent" className="hover:text-white">Reports</a><a href="#dashboard" className="hover:text-white">Dashboard</a></nav>
-              <div className="flex shrink-0 items-center gap-2">{user ? <button onClick={() => void signOut()} className="hidden max-w-36 truncate rounded-lg px-2 py-2 text-xs text-slate-400 hover:text-white sm:block" title={user.email ?? "Signed in"}>{user.email ?? "Signed in"} · Sign out</button> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110"><Zap size={15} />Start audit</button></div>
+              <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#pricing" className="hover:text-white">Pricing</a><a href="#recent" className="hover:text-white">Reports</a></nav>
+              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} onMyTests={showMyTests} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110"><Zap size={15} />Start audit</button></div>
             </div>
           </header>
 
@@ -496,7 +648,7 @@ export default function SpeedAuditDashboard() {
               {loading && <div role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4"><div className="flex items-center justify-between text-xs text-slate-300"><span>Running live audit</span><span>Usually under a minute</span></div><div className="loading-track mt-3"><i /></div><div className="mt-3 min-h-5 text-xs text-cyan-100"><span key={loadingStageIndex} className="loading-stage-text inline-flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />{LOADING_STAGES[loadingStageIndex]}</span></div></div>}
               {error && <div role="alert" className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.06] p-4 text-sm text-rose-100"><span>{error}</span><button onClick={() => runAudit()} className="shrink-0 font-medium underline underline-offset-2">Retry</button></div>}
 
-              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />{user ? `Signed in${user.email ? ` as ${user.email}` : ""}` : `${Math.max(0, FREE_GUEST_AUDITS - guestAudits)} free audits left`}</span></div>
+              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />{user ? "Signed in" : "Sign in required to run an audit"}</span></div>
             </div>
 
             <div className="device-showcase relative mx-auto grid w-full max-w-[690px] grid-cols-[.65fr_1.35fr] items-end gap-3 sm:gap-6 lg:gap-4">
@@ -509,6 +661,36 @@ export default function SpeedAuditDashboard() {
 
           <section id="features" className="relative border-t border-white/[0.06] bg-[#0b1428]/65 px-5 py-16 lg:px-8">
             <div className="mx-auto max-w-[1320px]"><div className="mb-8 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">One clear report</p><h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">The details that move your site forward</h2></div><p className="max-w-md text-sm leading-6 text-slate-400">Evidence-led insights from PageSpeed and the page itself, organized by device and category.</p></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{FEATURES.map(({ icon: Icon, title, text, color }) => <article key={title} className="feature-card rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5"><span className={`inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.045] ${color}`}><Icon size={20} /></span><h3 className="mt-5 text-sm font-semibold text-white">{title}</h3><p className="mt-2 text-sm leading-6 text-slate-400">{text}</p></article>)}</div></div>
+          </section>
+
+          <section id="pricing" className="relative border-y border-white/[0.06] bg-[#0b1428]/45 px-5 py-16 lg:px-8">
+            <div className="mx-auto max-w-[1320px]">
+              <div className="mx-auto mb-9 max-w-2xl text-center">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">Simple, transparent plans</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">Pricing that grows with your audits</h2>
+                <p className="mt-3 text-sm leading-6 text-slate-400">Choose the monthly audit allowance and export options that fit your workflow.</p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                {PRICING_PLANS.map((plan) => (
+                  <article key={plan.name} className={`flex h-full flex-col rounded-2xl border p-5 sm:p-6 ${plan.name === "Starter" ? "border-indigo-400/40 bg-gradient-to-b from-indigo-500/[0.12] to-cyan-500/[0.035] shadow-xl shadow-indigo-950/20" : "border-white/[0.08] bg-white/[0.025]"}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-lg font-semibold text-white">{plan.name}</h3>
+                      {plan.name === "Starter" && <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-cyan-200">Popular</span>}
+                    </div>
+                    <p className="mt-4 flex items-baseline gap-1"><span className="text-4xl font-semibold tracking-tight text-white">${plan.price}</span><span className="text-sm text-slate-400">/ month</span></p>
+                    <div className="mt-5 space-y-3 border-t border-white/[0.08] pt-5 text-sm">
+                      <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Audit tests</span><span className="font-medium text-white">{plan.audits}</span></p>
+                      <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Export results as PDF</span><span className={plan.pdf ? "font-medium text-emerald-300" : "text-slate-500"}>{plan.pdf ? "Yes" : "No"}</span></p>
+                      <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Export results as DOC</span><span className={plan.doc ? "font-medium text-emerald-300" : "text-slate-500"}>{plan.doc ? "Yes" : "No"}</span></p>
+                    </div>
+                    <div className="mt-auto border-t border-white/[0.08] pt-5">
+                      <p className="mb-3 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Included features</p>
+                      {plan.features.map((feature) => <p key={feature} className="flex items-start gap-2 text-sm leading-5 text-slate-300"><Check size={15} className="mt-0.5 shrink-0 text-cyan-300" />{feature}</p>)}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
           </section>
 
           <section id="recent" className="mx-auto grid max-w-[1320px] gap-8 px-5 py-16 lg:grid-cols-[1.2fr_.8fr] lg:px-8">
@@ -524,7 +706,7 @@ export default function SpeedAuditDashboard() {
           <div className="min-w-0 flex-1">
             <div className="glass-panel sticky top-3 z-30 mb-5 flex min-h-14 items-center justify-between gap-3 rounded-xl px-3 py-2 sm:px-4">
               <div className="flex min-w-0 items-center gap-2"><button onClick={() => setDrawerOpen(true)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Open report navigation"><Menu size={19} /></button><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{result.url}</p><p className="hidden text-[11px] text-slate-500 sm:block">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit completed"} · {result.status} response · {result.redirects ?? "n/a"} redirects</p></div></div>
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <button onClick={() => void signOut()} title="Sign out" aria-label="Sign out" className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08]"><LogOut size={14} /><span className="hidden sm:inline">Sign out</span></button>}<button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} onMyTests={showMyTests} />}<button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
             </div>
 
             <div className="space-y-5">
@@ -555,7 +737,41 @@ export default function SpeedAuditDashboard() {
 
               <section id="technical" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Run metadata" title="Technical Details" description="Available Lighthouse environment, throttling, request, and transfer metadata." /><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{([ ["Final URL", activeSpeed?.technical?.finalUrl], ["Requested URL", activeSpeed?.technical?.requestedUrl], ["Lighthouse version", activeSpeed?.technical?.lighthouseVersion], ["Fetch time", activeSpeed?.technical?.fetchTime], ["Form factor", activeSpeed?.technical?.formFactor], ["Request count", activeSpeed?.technical?.requestCount], ["Transfer size", formatBytes(activeSpeed?.technical?.transferBytes)], ["Response status", result.status], ["Throttling", activeSpeed?.technical?.throttling ? JSON.stringify(activeSpeed.technical.throttling) : null], ["Environment", activeSpeed?.technical?.environment ? JSON.stringify(activeSpeed.technical.environment) : null] ] as [string, unknown][]).map(([label, value]) => <div key={label} className="min-w-0 rounded-xl border border-white/[0.07] bg-slate-950/25 p-3"><p className="text-[10px] uppercase tracking-[0.13em] text-slate-500">{label}</p><p className="mt-2 break-all font-mono text-xs leading-5 text-slate-200">{value === null || value === undefined || value === "" ? "Unavailable" : typeof value === "string" ? value : String(value)}</p></div>)}</div><div className="mt-5 border-t border-white/[0.07] pt-4"><h3 className="mb-3 text-sm font-medium text-slate-200">Image delivery analysis</h3>{(result.images ?? []).length ? <div className="space-y-2">{result.images?.map((image, index) => <details key={`${image.src}-${index}`} className="finding-row rounded-xl border border-white/[0.07] bg-slate-950/25"><summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3"><span className={`h-2 w-2 rounded-full ${image.status === "pass" ? "bg-emerald-400" : image.status === "fail" ? "bg-rose-400" : "bg-amber-400"}`} /><span className="min-w-0 flex-1 truncate text-xs text-slate-200">{image.src}</span><span className="text-[10px] text-slate-500">{image.format} · {image.width ?? "?"}×{image.height ?? "?"}</span><ChevronDown size={14} className="text-slate-500" /></summary><div className="grid gap-3 border-t border-white/[0.07] p-4 sm:grid-cols-[120px_1fr]"><img src={image.src} alt={image.alt} className="h-24 w-full rounded-lg border border-white/10 bg-black/20 object-contain" /><div className="text-xs leading-5 text-slate-300"><p>Alt: {image.alt || "Missing"} · Loading: {image.loading}</p><p className="mt-1">{image.recommendation}</p>{image.issues.map((issue) => <p key={issue} className="mt-1 text-amber-200">{issue}</p>)}</div></div></details>)}</div> : <EmptyState label="No image analysis data was returned." />}</div></section>
 
-              <section id="screenshots" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Captured from the audited page" title="Screenshots & Filmstrip" description="Screenshots are real browser captures. Filmstrip frames are shown only when supplied by Lighthouse." /><div className="grid gap-4 xl:grid-cols-2">{([ ["Mobile screenshot", mobileScreenshot], ["Desktop screenshot", desktopScreenshot] ] as [string, string | undefined][]).map(([label, screenshot]) => <div key={label} className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-3"><div className="mb-3 flex items-center justify-between"><p className="text-sm font-medium text-white">{label}</p>{screenshot && <button onClick={() => setScreenshotOpen(screenshot)} className="text-xs text-cyan-200 hover:text-white">Enlarge</button>}</div>{screenshot ? <button onClick={() => setScreenshotOpen(screenshot)} className="block w-full overflow-hidden rounded-lg border border-white/10 bg-black/30"><img src={screenshot} alt={label} className="max-h-[460px] w-full object-contain" /></button> : <EmptyState label="A screenshot could not be captured for this device." />}</div>)}</div><h3 className="mb-3 mt-6 text-sm font-medium text-white">Lighthouse filmstrip · {device}</h3>{activeSpeed?.filmstrip?.length ? <div className="grid gap-3 grid-cols-2 md:grid-cols-4">{activeSpeed.filmstrip.map((frame, index) => <div key={`${index}-${frame.timing}`} className="overflow-hidden rounded-lg border border-white/[0.08] bg-slate-950/30"><button onClick={() => setScreenshotOpen(frame.data)} className="block w-full"><img src={frame.data} alt={`Lighthouse filmstrip frame ${index + 1}`} className="aspect-video w-full object-cover" /></button><p className="p-2 font-mono text-[10px] text-slate-500">{frame.timing === null ? `Frame ${index + 1}` : `${frame.timing} ms`}</p></div>)}</div> : <EmptyState label="No filmstrip frames were provided by this Lighthouse run." />}</section>
+              <section id="screenshots" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading
+                  eyebrow="Captured from the audited page"
+                  title="Screenshots & Filmstrip"
+                  description="Full browser screenshots are preferred; the final PageSpeed filmstrip frame is used when browser capture is unavailable."
+                />
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {([["Mobile screenshot", mobileScreenshot], ["Desktop screenshot", desktopScreenshot]] as [string, string | undefined][]).map(([label, screenshot]) => (
+                    <div key={label} className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-3">
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-medium text-white">{label}</p>
+                        {screenshot && <button onClick={() => setScreenshotOpen(screenshot)} className="text-xs text-cyan-200 hover:text-white">Enlarge</button>}
+                      </div>
+                      {screenshot ? (
+                        <button onClick={() => setScreenshotOpen(screenshot)} className="block w-full overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                          <img src={screenshot} alt={label} className="max-h-[460px] w-full object-contain" />
+                        </button>
+                      ) : <EmptyState label="A screenshot could not be captured for this device." />}
+                    </div>
+                  ))}
+                </div>
+                <h3 className="mb-3 mt-6 text-sm font-medium text-white">Lighthouse filmstrip · {device}</h3>
+                {activeSpeed?.filmstrip?.length ? (
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    {activeSpeed.filmstrip.map((frame, index) => (
+                      <div key={`${index}-${frame.timing}`} className="overflow-hidden rounded-lg border border-white/[0.08] bg-slate-950/30">
+                        <button onClick={() => setScreenshotOpen(frame.data)} className="block w-full">
+                          <img src={frame.data} alt={`Lighthouse filmstrip frame ${index + 1}`} className="aspect-video w-full object-cover" />
+                        </button>
+                        <p className="p-2 font-mono text-[10px] text-slate-500">{frame.timing === null ? `Frame ${index + 1}` : `${frame.timing} ms`}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : <EmptyState label="No filmstrip frames were provided by this Lighthouse run." />}
+              </section>
 
               <footer className="flex items-center justify-between border-t border-white/[0.06] py-5 text-xs text-slate-600"><button onClick={resetDashboard} className="inline-flex items-center gap-2 hover:text-slate-300"><ArrowLeft size={14} />Dashboard</button><span>SpeedAudit · Lighthouse-based report</span></footer>
             </div>

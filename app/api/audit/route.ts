@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { chromium } from "playwright";
+import { createClient } from "@supabase/supabase-js";
 
 export const maxDuration = 60;
 
@@ -360,19 +361,54 @@ async function capturePageScreenshot(url: URL, viewport: { width: number; height
     }
 
     const image = await page.screenshot({
-      type: "png",
+      type: "jpeg",
+      quality: 70,
       fullPage: false,
     });
 
-    return `data:image/png;base64,${image.toString("base64")}`;
+    return `data:image/jpeg;base64,${image.toString("base64")}`;
   } finally {
     await browser.close();
   }
 }
 
+async function captureScreenshotOrFallback(url: URL, viewport: { width: number; height: number }, device: "mobile" | "desktop") {
+  try {
+    return await capturePageScreenshot(url, viewport, device);
+  } catch (cause) {
+    console.warn(`Browser screenshot capture failed for ${device}; using PageSpeed filmstrip fallback when available.`, cause);
+    return undefined;
+  }
+}
+
+function getPageSpeedScreenshot(speed: Awaited<ReturnType<typeof getPageSpeed>>) {
+  if (!("filmstrip" in speed) || !speed.filmstrip?.length) return undefined;
+  return speed.filmstrip[speed.filmstrip.length - 1].data;
+}
+
 /* ---------- Route ---------- */
 
 export async function POST(request: Request) {
+  const authorization = request.headers.get("authorization");
+  const accessToken = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!accessToken) {
+    return NextResponse.json({ error: "Please sign in before running an audit." }, { status: 401 });
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return NextResponse.json({ error: "Authentication is not configured on this server." }, { status: 503 });
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+  const { data: authData, error: authError } = await supabase.auth.getUser(accessToken);
+  if (authError || !authData.user) {
+    return NextResponse.json({ error: "Your session has expired. Please sign in again." }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => ({}));
   const input = typeof body.url === "string" ? body.url.trim() : "";
 
@@ -393,18 +429,19 @@ export async function POST(request: Request) {
     const $ = cheerio.load(html);
 
     // Slow work runs in parallel
-    const [mobile, desktop, robots, sitemapA, sitemapB] = await Promise.all([
+    const [mobile, desktop, robots, sitemapA, sitemapB, mobileCapture, desktopCapture] = await Promise.all([
       getPageSpeed(finalUrl.href, "mobile"),
       getPageSpeed(finalUrl.href, "desktop"),
       fetchSmall(new URL("/robots.txt", finalUrl.origin)),
       fetchSmall(new URL("/sitemap.xml", finalUrl.origin)),
       fetchSmall(new URL("/sitemap_index.xml", finalUrl.origin)),
+      captureScreenshotOrFallback(finalUrl, { width: 390, height: 844 }, "mobile"),
+      captureScreenshotOrFallback(finalUrl, { width: 1440, height: 900 }, "desktop"),
     ]);
-
-    const screenshots = await Promise.all([
-      capturePageScreenshot(finalUrl, { width: 390, height: 844 }, "mobile"),
-      capturePageScreenshot(finalUrl, { width: 1440, height: 900 }, "desktop"),
-    ]).catch(() => [undefined, undefined] as [string | undefined, string | undefined]);
+    const screenshots = [
+      mobileCapture ?? getPageSpeedScreenshot(mobile),
+      desktopCapture ?? getPageSpeedScreenshot(desktop),
+    ];
 
     const checks: Check[] = [];
     const add = (
