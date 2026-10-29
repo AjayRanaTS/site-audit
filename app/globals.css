@@ -255,6 +255,10 @@ footer {
   z-index: 1;
 }
 
+.site-header {
+  z-index: 40;
+}
+
 .hero-section {
   overflow-x: clip;
 }

@@ -1,12 +1,13 @@
 "use client";
 
-import Link from "next/link";
 import { ClipboardList, LogOut, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { getUserDisplayName, getUserInitials } from "@/lib/profile";
 
 export default function ProfileMenu({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +33,11 @@ export default function ProfileMenu({ user, onSignOut }: { user: User; onSignOut
   const displayName = getUserDisplayName(user);
   const initials = getUserInitials(user);
 
+  function navigateTo(path: "/profile" | "/my-tests") {
+    setOpen(false);
+    router.push(path);
+  }
+
   return (
     <div ref={menuRef} className="relative">
       <button
@@ -51,12 +57,12 @@ export default function ProfileMenu({ user, onSignOut }: { user: User; onSignOut
             <p className="truncate text-sm font-medium text-white">{displayName}</p>
             {user.email && <p className="mt-0.5 truncate text-xs text-slate-400">{user.email}</p>}
           </div>
-          <Link href="/profile" role="menuitem" onClick={() => setOpen(false)} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
+          <button type="button" role="menuitem" onClick={() => navigateTo("/profile")} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
             <UserRound size={16} className="text-slate-400" />My profile
-          </Link>
-          <Link href="/my-tests" role="menuitem" onClick={() => setOpen(false)} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
+          </button>
+          <button type="button" role="menuitem" onClick={() => navigateTo("/my-tests")} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
             <ClipboardList size={16} className="text-slate-400" />My tests
-          </Link>
+          </button>
           <button type="button" role="menuitem" onClick={() => { setOpen(false); onSignOut(); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-rose-200 transition hover:bg-rose-400/[0.08]">
             <LogOut size={16} />Log out
           </button>

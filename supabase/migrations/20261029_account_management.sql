@@ -26,3 +26,5 @@ create policy "Users can create their own audit history"
 
 grant select, insert on public.audit_history to authenticated;
 revoke all on public.audit_history from anon, public;
+
+notify pgrst, 'reload schema';

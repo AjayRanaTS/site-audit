@@ -39,6 +39,7 @@ import AuthModal from "@/components/auth-modal";
 import ProfileMenu from "@/components/profile-menu";
 import ThemeSwitch from "@/components/theme-switch";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { formatAuditHistoryError } from "@/lib/audit-history-error";
 
 type Device = "mobile" | "desktop";
 type AuditStatus = "pass" | "warn" | "fail" | "manual";
@@ -311,7 +312,6 @@ function ResultSidebar({ active, collapsed, setCollapsed, drawerOpen, setDrawerO
 
 export default function SpeedAuditDashboard() {
   const router = useRouter();
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [url, setUrl] = useState("");
   const [device, setDevice] = useState<Device>("mobile");
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -361,10 +361,6 @@ export default function SpeedAuditDashboard() {
     async function initializeAuth() {
       const sessionResult = supabase ? await supabase.auth.getSession() : await Promise.resolve(null);
       if (!active) return;
-      const savedTheme = window.localStorage.getItem("speedaudit-theme");
-      const initialTheme = savedTheme === "dark" ? "dark" : "light";
-      document.documentElement.dataset.theme = initialTheme;
-      setTheme(initialTheme);
       const authenticatedUser = sessionResult?.data.session?.user ?? null;
       setUser(authenticatedUser);
       if (authenticatedUser) restorePendingAuditUrl();
@@ -381,6 +377,7 @@ export default function SpeedAuditDashboard() {
 
   useEffect(() => {
     if (!authReady || !user) return;
+    const userId = user.id;
     const historyId = window.sessionStorage.getItem(HISTORY_REPORT_KEY);
     if (!historyId) return;
     window.sessionStorage.removeItem(HISTORY_REPORT_KEY);
@@ -396,6 +393,7 @@ export default function SpeedAuditDashboard() {
         const { data, error: historyError } = await supabase
           .from("audit_history")
           .select("audited_at, result")
+          .eq("user_id", userId)
           .eq("id", historyId)
           .maybeSingle();
         if (!active) return;
@@ -517,7 +515,7 @@ export default function SpeedAuditDashboard() {
             result: storedResult,
           });
           if (saveError) {
-            setHistorySaveError(`Audit completed, but it could not be saved to My tests. ${saveError.message}`);
+            setHistorySaveError(formatAuditHistoryError("Audit completed, but it could not be saved to My tests.", saveError));
           }
         } catch (cause) {
           setHistorySaveError(`Audit completed, but it could not be saved to My tests. ${cause instanceof Error ? cause.message : "The history request failed."}`);
@@ -537,21 +535,18 @@ export default function SpeedAuditDashboard() {
       setError("Authentication is not configured.");
       return;
     }
-    const { error: signOutError } = await supabase.auth.signOut();
-    if (signOutError) {
-      setError(signOutError.message);
-      return;
+    try {
+      const { error: signOutError } = await supabase.auth.signOut();
+      if (signOutError) {
+        setError(signOutError.message);
+        return;
+      }
+      setResult(null);
+      setShowCapturedPreviews(false);
+      router.replace("/");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not log out.");
     }
-    setResult(null);
-    setShowCapturedPreviews(false);
-    router.replace("/");
-  }
-
-  function toggleTheme() {
-    const nextTheme = theme === "light" ? "dark" : "light";
-    document.documentElement.dataset.theme = nextTheme;
-    window.localStorage.setItem("speedaudit-theme", nextTheme);
-    setTheme(nextTheme);
   }
 
   function navigateToSection(id: string) {
@@ -601,11 +596,11 @@ export default function SpeedAuditDashboard() {
       <div className="ambient-lines" aria-hidden="true"><i /><i /><i /></div>
       {!result || showCapturedPreviews ? (
         <>
-          <header className="site-header relative z-10 border-b border-white/[0.07]">
+          <header className="site-header relative z-40 border-b border-white/[0.07]">
             <div className="mx-auto flex min-h-[76px] max-w-[1320px] items-center justify-between gap-4 px-5 lg:px-8">
               <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">SpeedAudit</span></a>
               <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#pricing" className="hover:text-white">Pricing</a><a href="#recent" className="hover:text-white">Reports</a></nav>
-              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<ThemeSwitch theme={theme} onToggle={toggleTheme} /><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="hidden min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:flex"><Zap size={15} />Start audit</button></div>
+              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<ThemeSwitch /><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="hidden min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:flex"><Zap size={15} />Start audit</button></div>
             </div>
           </header>
 
@@ -684,7 +679,7 @@ export default function SpeedAuditDashboard() {
           <div className="min-w-0 flex-1">
             <div className="glass-panel sticky top-3 z-30 mb-5 flex min-h-14 items-center justify-between gap-3 rounded-xl px-3 py-2 sm:px-4">
               <div className="flex min-w-0 items-center gap-2"><button onClick={() => setDrawerOpen(true)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Open report navigation"><Menu size={19} /></button><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{result.url}</p><p className="hidden text-[11px] text-slate-500 sm:block">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit completed"} · {result.status} response · {result.redirects ?? "n/a"} redirects</p></div></div>
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} />}<ThemeSwitch theme={theme} onToggle={toggleTheme} /><button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} />}<ThemeSwitch /><button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
             </div>
 
             <div className="space-y-5">

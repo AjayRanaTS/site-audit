@@ -3,16 +3,16 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, CalendarClock, Check, LoaderCircle, Save, ShieldCheck, UserRound } from "lucide-react";
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { User } from "@supabase/supabase-js";
 import ProfileMenu from "@/components/profile-menu";
 import ThemeSwitch from "@/components/theme-switch";
 import { getUserDisplayName, getUserInitials } from "@/lib/profile";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { formatAuditHistoryError } from "@/lib/audit-history-error";
 
 const HISTORY_REPORT_KEY = "speedaudit-open-history-id";
 
-type Theme = "light" | "dark";
 type HistoryRecord = {
   id: string;
   target_url: string;
@@ -111,39 +111,6 @@ function useRequiredUser(path: string) {
   return { user, setUser, ready, authError, signOut };
 }
 
-const THEME_CHANGE_EVENT = "speedaudit-theme-change";
-
-function getThemeSnapshot(): Theme {
-  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
-}
-
-function subscribeToTheme(onChange: () => void) {
-  window.addEventListener(THEME_CHANGE_EVENT, onChange);
-  window.addEventListener("storage", onChange);
-  return () => {
-    window.removeEventListener(THEME_CHANGE_EVENT, onChange);
-    window.removeEventListener("storage", onChange);
-  };
-}
-
-function useAccountTheme() {
-  const theme = useSyncExternalStore<Theme>(subscribeToTheme, getThemeSnapshot, () => "light");
-  useEffect(() => {
-    const savedTheme = window.localStorage.getItem("speedaudit-theme");
-    const initialTheme = savedTheme === "dark" ? "dark" : "light";
-    document.documentElement.dataset.theme = initialTheme;
-    window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
-  }, []);
-
-  const toggleTheme = () => {
-    const nextTheme = theme === "light" ? "dark" : "light";
-    document.documentElement.dataset.theme = nextTheme;
-    window.localStorage.setItem("speedaudit-theme", nextTheme);
-    window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
-  };
-  return { theme, toggleTheme };
-}
-
 function AccountFrame({ user, signOut, title, description, children }: {
   user: User;
   signOut: () => void;
@@ -151,19 +118,18 @@ function AccountFrame({ user, signOut, title, description, children }: {
   description: string;
   children: ReactNode;
 }) {
-  const { theme, toggleTheme } = useAccountTheme();
   const initials = getUserInitials(user);
 
   return (
     <main className="min-h-screen bg-[#080f20] text-slate-100">
-      <header className="site-header relative z-10 border-b border-white/[0.07]">
+      <header className="site-header relative z-40 border-b border-white/[0.07]">
         <div className="mx-auto flex min-h-[76px] max-w-[1080px] items-center justify-between gap-4 px-5 lg:px-8">
           <Link href="/" className="flex shrink-0 items-center gap-2.5 text-white">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><UserRound size={19} /></span>
             <span className="text-[17px] font-semibold">SpeedAudit</span>
           </Link>
           <div className="flex items-center gap-2">
-            <ThemeSwitch theme={theme} onToggle={toggleTheme} />
+            <ThemeSwitch />
             <ProfileMenu user={user} onSignOut={signOut} />
           </div>
         </div>
@@ -307,7 +273,8 @@ export function MyTestsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!account.user) return;
+    const userId = account.user?.id;
+    if (!userId) return;
     let active = true;
     async function loadHistory() {
       const supabase = getSupabaseClient();
@@ -321,10 +288,11 @@ export function MyTestsPage() {
         const { data, error: queryError } = await supabase
           .from("audit_history")
           .select("id, target_url, audited_at, audit_status, result")
+          .eq("user_id", userId)
           .order("audited_at", { ascending: false });
         if (!active) return;
         if (queryError) {
-          setError(`Could not load your audit history. Apply the Supabase migration in supabase/migrations/20261029_account_management.sql. ${queryError.message}`);
+          setError(formatAuditHistoryError("Could not load your audit history.", queryError));
         } else {
           try {
             setRecords(decodeHistoryRows(data));
