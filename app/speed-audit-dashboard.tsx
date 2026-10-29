@@ -7,7 +7,6 @@ import {
   Accessibility,
   CalendarClock,
   Check,
-  ClipboardList,
   ChevronDown,
   CircleCheck,
   Download,
@@ -18,7 +17,6 @@ import {
   Info,
   LayoutDashboard,
   LoaderCircle,
-  LogOut,
   Menu,
   Monitor,
   PanelLeftClose,
@@ -29,7 +27,6 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
-  UserRound,
   X,
   Zap,
   type LucideIcon,
@@ -39,6 +36,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import AuthModal from "@/components/auth-modal";
+import ProfileMenu from "@/components/profile-menu";
+import ThemeSwitch from "@/components/theme-switch";
 import { getSupabaseClient } from "@/lib/supabase/client";
 
 type Device = "mobile" | "desktop";
@@ -87,7 +86,7 @@ type ImageEntry = {
   issues: string[];
   recommendation: string;
 };
-type AuditResult = {
+export type AuditResult = {
   url: string;
   status: number;
   redirects?: number;
@@ -133,6 +132,7 @@ const FEATURES: { icon: LucideIcon; title: string; text: string; color: string }
 
 const LOADING_STAGES = ["Fetching page", "PageSpeed analysis", "Capturing screenshots"] as const;
 const PENDING_AUDIT_STORAGE_KEY = "speedaudit-pending-audit-url";
+const HISTORY_REPORT_KEY = "speedaudit-open-history-id";
 
 const PRICING_PLANS = [
   { name: "Free", price: 0, audits: "3/month", pdf: false, doc: false, features: ["Basic features"] },
@@ -140,106 +140,14 @@ const PRICING_PLANS = [
   { name: "Pro", price: 19, audits: "40/month", pdf: true, doc: true, features: ["All Free and Starter features"] },
 ] as const;
 
-function getUserInitials(user: User) {
-  const metadata = user.user_metadata;
-  const firstName = typeof metadata.first_name === "string" ? metadata.first_name.trim() : "";
-  const lastName = typeof metadata.last_name === "string" ? metadata.last_name.trim() : "";
-  const fullName = [firstName, lastName].filter(Boolean).join(" ") ||
-    (typeof metadata.full_name === "string" ? metadata.full_name : "") ||
-    (typeof metadata.name === "string" ? metadata.name : "");
-  const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
-  if (nameParts.length > 1) return `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase();
-  if (nameParts.length === 1) return nameParts[0].slice(0, 2).toUpperCase();
-  return user.email?.trim().slice(0, 1).toUpperCase() || "U";
-}
-
-function getUserDisplayName(user: User) {
-  const metadata = user.user_metadata;
-  const firstName = typeof metadata.first_name === "string" ? metadata.first_name.trim() : "";
-  const lastName = typeof metadata.last_name === "string" ? metadata.last_name.trim() : "";
-  const registeredName = [firstName, lastName].filter(Boolean).join(" ");
-  if (registeredName) return registeredName;
-  if (typeof metadata.full_name === "string" && metadata.full_name.trim()) return metadata.full_name.trim();
-  if (typeof metadata.name === "string" && metadata.name.trim()) return metadata.name.trim();
-  return user.email ?? "Your account";
-}
-
-function ProfileMenu({ user, onSignOut, onMyTests }: { user: User; onSignOut: () => void; onMyTests: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const initials = getUserInitials(user);
-  const displayName = getUserDisplayName(user);
-
-  useEffect(() => {
-    if (!open) return;
-
-    function handlePointerDown(event: PointerEvent) {
-      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setOpen(false);
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  return (
-    <div ref={menuRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((isOpen) => !isOpen)}
-        className="flex h-10 w-10 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-xs font-semibold tracking-wide text-cyan-100 transition hover:border-cyan-200/60 hover:brightness-110"
-        title={`${displayName} account menu`}
-        aria-label={`${displayName} account menu`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        {initials}
-      </button>
-      {open && (
-        <div role="menu" aria-label="Account menu" className="absolute right-0 top-12 z-50 w-56 overflow-hidden rounded-xl border border-white/10 bg-[#0b1428] p-1.5 shadow-2xl shadow-black/50">
-          <div className="border-b border-white/[0.08] px-3 py-2.5">
-            <p className="truncate text-sm font-medium text-white">{displayName}</p>
-            {user.email && <p className="mt-0.5 truncate text-xs text-slate-400">{user.email}</p>}
-          </div>
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); setProfileOpen(true); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
-            <UserRound size={16} className="text-slate-400" />My profile
-          </button>
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); onMyTests(); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white">
-            <ClipboardList size={16} className="text-slate-400" />My tests
-          </button>
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); onSignOut(); }} className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-rose-200 transition hover:bg-rose-400/[0.08]">
-            <LogOut size={16} />Logout
-          </button>
-        </div>
-      )}
-      {profileOpen && (
-        <div role="presentation" className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030712]/75 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="profile-title" className="glass-panel w-full max-w-sm rounded-2xl p-5 shadow-2xl sm:p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-sm font-semibold text-cyan-100">{initials}</div>
-                <h2 id="profile-title" className="text-lg font-semibold text-white">My profile</h2>
-                <p className="mt-1 text-sm text-slate-400">Your SpeedAudit account details.</p>
-              </div>
-              <button type="button" onClick={() => setProfileOpen(false)} aria-label="Close profile" className="rounded-lg p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"><X size={18} /></button>
-            </div>
-            <dl className="mt-5 space-y-3 rounded-xl border border-white/[0.08] bg-slate-950/25 p-4">
-              <div><dt className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Name</dt><dd className="mt-1 text-sm text-slate-200">{displayName}</dd></div>
-              <div><dt className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Email</dt><dd className="mt-1 break-all text-sm text-slate-200">{user.email ?? "Not available"}</dd></div>
-            </dl>
-          </section>
-        </div>
-      )}
-    </div>
-  );
+function isAuditResult(value: unknown): value is AuditResult {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.url === "string" &&
+    typeof candidate.status === "number" &&
+    typeof candidate.seoScore === "number" &&
+    Array.isArray(candidate.checks) &&
+    Boolean(candidate.performance && typeof candidate.performance === "object");
 }
 
 function scoreStatus(score: number | null | undefined) {
@@ -403,6 +311,7 @@ function ResultSidebar({ active, collapsed, setCollapsed, drawerOpen, setDrawerO
 
 export default function SpeedAuditDashboard() {
   const router = useRouter();
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [url, setUrl] = useState("");
   const [device, setDevice] = useState<Device>("mobile");
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -415,6 +324,7 @@ export default function SpeedAuditDashboard() {
   const [loading, setLoading] = useState(false);
   const [loadingStageIndex, setLoadingStageIndex] = useState(0);
   const [error, setError] = useState("");
+  const [historySaveError, setHistorySaveError] = useState("");
   const [activeSection, setActiveSection] = useState("overview");
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -451,6 +361,10 @@ export default function SpeedAuditDashboard() {
     async function initializeAuth() {
       const sessionResult = supabase ? await supabase.auth.getSession() : await Promise.resolve(null);
       if (!active) return;
+      const savedTheme = window.localStorage.getItem("speedaudit-theme");
+      const initialTheme = savedTheme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = initialTheme;
+      setTheme(initialTheme);
       const authenticatedUser = sessionResult?.data.session?.user ?? null;
       setUser(authenticatedUser);
       if (authenticatedUser) restorePendingAuditUrl();
@@ -464,6 +378,50 @@ export default function SpeedAuditDashboard() {
       subscription?.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!authReady || !user) return;
+    const historyId = window.sessionStorage.getItem(HISTORY_REPORT_KEY);
+    if (!historyId) return;
+    window.sessionStorage.removeItem(HISTORY_REPORT_KEY);
+
+    let active = true;
+    async function restoreHistoryReport() {
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setError("Authentication is not configured.");
+        return;
+      }
+      try {
+        const { data, error: historyError } = await supabase
+          .from("audit_history")
+          .select("audited_at, result")
+          .eq("id", historyId)
+          .maybeSingle();
+        if (!active) return;
+        if (historyError) {
+          setError(`Could not open this saved report. ${historyError.message}`);
+          return;
+        }
+        if (!data || !isAuditResult(data.result)) {
+          setError("This saved report is unavailable or has invalid data.");
+          return;
+        }
+        setResult(data.result);
+        setUrl(data.result.url);
+        setAuditedAt(data.audited_at);
+        setLastAudit({ result: data.result, auditedAt: data.audited_at });
+        setShowCapturedPreviews(false);
+        setActiveSection("overview");
+        window.scrollTo({ top: 0 });
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : "Could not open this saved report.");
+      }
+    }
+
+    void restoreHistoryReport();
+    return () => { active = false; };
+  }, [authReady, user]);
 
   useEffect(() => {
     if (!loading) return;
@@ -518,6 +476,7 @@ export default function SpeedAuditDashboard() {
     setLoadingStageIndex(0);
     setLoading(true);
     setError("");
+    setHistorySaveError("");
     setResult(null);
     setShowCapturedPreviews(false);
     try {
@@ -544,6 +503,26 @@ export default function SpeedAuditDashboard() {
       setLastAudit({ result: completedResult, auditedAt: completedAt });
       setActiveSection("overview");
       window.scrollTo({ top: 0, behavior: "smooth" });
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setHistorySaveError("Audit completed, but history could not be saved because authentication is not configured.");
+      } else {
+        const storedResult = { ...completedResult, screenshots: undefined };
+        try {
+          const { error: saveError } = await supabase.from("audit_history").insert({
+            user_id: user.id,
+            target_url: completedResult.url,
+            audited_at: completedAt,
+            audit_status: "completed",
+            result: storedResult,
+          });
+          if (saveError) {
+            setHistorySaveError(`Audit completed, but it could not be saved to My tests. ${saveError.message}`);
+          }
+        } catch (cause) {
+          setHistorySaveError(`Audit completed, but it could not be saved to My tests. ${cause instanceof Error ? cause.message : "The history request failed."}`);
+        }
+      }
     } catch (cause) {
       const reason = cause instanceof Error && cause.name === "TimeoutError" ? "The audit took too long to finish. Please retry." : cause instanceof Error ? cause.message : "Unable to complete this audit.";
       setError(reason);
@@ -568,12 +547,11 @@ export default function SpeedAuditDashboard() {
     router.replace("/");
   }
 
-  function showMyTests() {
-    setResult(null);
-    setShowCapturedPreviews(false);
-    window.setTimeout(() => {
-      document.getElementById("recent")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 0);
+  function toggleTheme() {
+    const nextTheme = theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = nextTheme;
+    window.localStorage.setItem("speedaudit-theme", nextTheme);
+    setTheme(nextTheme);
   }
 
   function navigateToSection(id: string) {
@@ -627,7 +605,7 @@ export default function SpeedAuditDashboard() {
             <div className="mx-auto flex min-h-[76px] max-w-[1320px] items-center justify-between gap-4 px-5 lg:px-8">
               <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">SpeedAudit</span></a>
               <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#pricing" className="hover:text-white">Pricing</a><a href="#recent" className="hover:text-white">Reports</a></nav>
-              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} onMyTests={showMyTests} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110"><Zap size={15} />Start audit</button></div>
+              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<ThemeSwitch theme={theme} onToggle={toggleTheme} /><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="hidden min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:flex"><Zap size={15} />Start audit</button></div>
             </div>
           </header>
 
@@ -706,10 +684,11 @@ export default function SpeedAuditDashboard() {
           <div className="min-w-0 flex-1">
             <div className="glass-panel sticky top-3 z-30 mb-5 flex min-h-14 items-center justify-between gap-3 rounded-xl px-3 py-2 sm:px-4">
               <div className="flex min-w-0 items-center gap-2"><button onClick={() => setDrawerOpen(true)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Open report navigation"><Menu size={19} /></button><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{result.url}</p><p className="hidden text-[11px] text-slate-500 sm:block">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit completed"} · {result.status} response · {result.redirects ?? "n/a"} redirects</p></div></div>
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} onMyTests={showMyTests} />}<button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} />}<ThemeSwitch theme={theme} onToggle={toggleTheme} /><button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
             </div>
 
             <div className="space-y-5">
+              {historySaveError && <p role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-3 text-sm text-amber-200">{historySaveError}</p>}
               <section id="overview" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                   <div className="flex min-w-0 items-center gap-3">{result.favicon ? <Image src={result.favicon} alt="" width={40} height={40} unoptimized className="h-10 w-10 rounded-xl border border-white/10 bg-white/5 p-2" /> : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200"><Globe2 size={18} /></span>}<div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="max-w-full break-all text-lg font-semibold text-white">{new URL(result.url).hostname}</p><a href={result.url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-cyan-300" aria-label="Open audited website"><ExternalLink size={15} /></a></div><p className="mt-1 truncate text-xs text-slate-500">{result.url}</p></div></div>

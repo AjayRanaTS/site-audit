@@ -29,6 +29,12 @@ For Vercel, add the same variables under **Project Settings > Environment Variab
 
 Audit screenshots use browser captures when Chromium is available. If the deployment cannot launch Chromium, the audit uses the final PageSpeed filmstrip frame for that device instead. The PageSpeed key must be configured for this fallback.
 
+## Supabase account history
+
+Profile editing uses Supabase Auth user metadata, and password changes use Supabase Auth. Saved audit history requires the `audit_history` table and row-level security policies from `supabase/migrations/20261029_account_management.sql`.
+
+Before deploying, run that migration in the Supabase SQL Editor for the project used by the app. It grants authenticated users access only to their own audit rows. Completed report data is saved without embedded screenshots to keep the stored records smaller; opening a saved report will show screenshots as unavailable.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More

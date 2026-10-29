@@ -1,6 +1,12 @@
 @import "tailwindcss";
 
 :root {
+  color-scheme: light;
+  --background: #f4f7fc;
+  --foreground: #172033;
+}
+
+[data-theme="dark"] {
   color-scheme: dark;
   --background: #080f20;
   --foreground: #f8fafc;
@@ -13,13 +19,6 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   min-height: 100%;
   background: var(--background);
@@ -27,9 +26,188 @@ body {
   font-family: var(--font-geist-sans), sans-serif;
 }
 
+[data-theme="light"] body {
+  background: #f4f7fc;
+  color: #172033;
+}
+
 html {
   scroll-behavior: smooth;
   background: var(--background);
+}
+
+[data-theme="light"] main {
+  background: #f4f7fc !important;
+  color: #172033 !important;
+}
+
+[data-theme="light"] .site-header {
+  border-color: #dce3ee;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="light"] .site-header nav a:hover {
+  color: #4338ca !important;
+}
+
+[data-theme="light"] .account-menu [role="menuitem"]:not([class*="text-rose"]):hover {
+  background-color: rgba(79, 70, 229, 0.08);
+  color: #4338ca !important;
+}
+
+[data-theme="light"] .account-menu [role="menuitem"][class*="text-rose"]:hover {
+  background-color: rgba(190, 18, 60, 0.08);
+}
+
+[data-theme="light"] #features,
+[data-theme="light"] #pricing {
+  border-color: #e2e8f0;
+  background: rgba(226, 232, 240, 0.45);
+}
+
+[data-theme="light"] .glass-panel,
+[data-theme="light"] [class*="bg-slate-950"] {
+  border-color: rgba(148, 163, 184, 0.28);
+  background-color: rgba(255, 255, 255, 0.94) !important;
+  color: #172033;
+  box-shadow: 0 12px 32px rgba(30, 50, 80, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+[data-theme="light"] main.bg-\[\#080f20\] {
+  background-color: #f4f7fc !important;
+}
+
+[data-theme="light"] [class*="bg-white/"] {
+  background-color: rgba(15, 23, 42, 0.035);
+}
+
+[data-theme="light"] [class*="border-white"] {
+  border-color: rgba(100, 116, 139, 0.2) !important;
+}
+
+[data-theme="light"] [class~="text-white"]:not([class~="bg-gradient-to-r"]) {
+  color: #172033 !important;
+}
+
+[data-theme="light"] [class~="text-slate-100"],
+[data-theme="light"] [class~="text-slate-200"],
+[data-theme="light"] [class~="text-slate-300"] {
+  color: #263449 !important;
+}
+
+[data-theme="light"] [class~="text-slate-400"] {
+  color: #526176 !important;
+}
+
+[data-theme="light"] [class~="text-slate-500"],
+[data-theme="light"] [class~="text-slate-600"] {
+  color: #64748b !important;
+}
+
+[data-theme="light"] [class~="text-indigo-100"],
+[data-theme="light"] [class~="text-indigo-300"] {
+  color: #4338ca !important;
+}
+
+[data-theme="light"] [class~="text-cyan-100"],
+[data-theme="light"] [class~="text-cyan-200"],
+[data-theme="light"] [class~="text-cyan-300"] {
+  color: #0e7490 !important;
+}
+
+[data-theme="light"] [class~="text-cyan-100/80"] {
+  color: #155e75 !important;
+}
+
+[data-theme="light"] [class~="text-emerald-200"],
+[data-theme="light"] [class~="text-emerald-300"],
+[data-theme="light"] [class~="text-emerald-400"] {
+  color: #047857 !important;
+}
+
+[data-theme="light"] [class~="text-amber-100"],
+[data-theme="light"] [class~="text-amber-100/70"],
+[data-theme="light"] [class~="text-amber-200"],
+[data-theme="light"] [class~="text-amber-300"],
+[data-theme="light"] [class~="text-amber-400"] {
+  color: #a16207 !important;
+}
+
+[data-theme="light"] [class~="text-rose-100"],
+[data-theme="light"] [class~="text-rose-200"],
+[data-theme="light"] [class~="text-rose-300"] {
+  color: #be123c !important;
+}
+
+[data-theme="light"] [class~="text-blue-200"],
+[data-theme="light"] [class~="text-blue-300"] {
+  color: #1d4ed8 !important;
+}
+
+[data-theme="light"] button[class~="bg-gradient-to-r"] {
+  background-image: linear-gradient(to right, #4f46e5, #0e7490);
+  color: #fff !important;
+}
+
+[data-theme="light"] [class*="bg-rose-400/"] {
+  border-color: rgba(190, 18, 60, 0.24);
+  background-color: rgba(190, 18, 60, 0.07);
+}
+
+[data-theme="light"] [class*="bg-emerald-400/"] {
+  border-color: rgba(4, 120, 87, 0.24);
+  background-color: rgba(4, 120, 87, 0.07);
+}
+
+[data-theme="light"] [class*="bg-amber-400/"] {
+  border-color: rgba(161, 98, 7, 0.24);
+  background-color: rgba(161, 98, 7, 0.07);
+}
+
+[data-theme="light"] .text-gradient {
+  background-image: linear-gradient(105deg, #4f46e5 5%, #0891b2 85%);
+}
+
+[data-theme="light"] .ambient-lines {
+  opacity: 0.1;
+}
+
+[data-theme="light"] .audit-form,
+[data-theme="light"] .account-menu {
+  border-color: #dbe3ee;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+[data-theme="light"] input {
+  color: #172033;
+}
+
+[data-theme="light"] input::placeholder {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .feature-card,
+[data-theme="light"] .score-card,
+[data-theme="light"] #pricing article {
+  border-color: rgba(148, 163, 184, 0.28);
+  background-color: rgba(255, 255, 255, 0.78);
+}
+
+[data-theme="light"] .phone-screen,
+[data-theme="light"] .laptop-screen {
+  background: #070d18;
+}
+
+[data-theme="light"] .phone-frame {
+  box-shadow: 0 8px 14px rgba(15, 23, 42, 0.12), inset 0 0 0 2px #050608;
+}
+
+[data-theme="light"] .laptop-bezel {
+  box-shadow: 0 7px 14px rgba(15, 23, 42, 0.1), inset 0 0 0 2px #050608;
+}
+
+[data-theme="light"] .laptop-base {
+  box-shadow: 0 3px 5px rgba(15, 23, 42, 0.1);
 }
 
 button,

@@ -17,7 +17,9 @@ export default function LoginPage() {
         }}
         onAuthenticated={() => {
           authenticated.current = true;
-          router.replace("/");
+          const next = new URLSearchParams(window.location.search).get("next");
+          const destination = next?.startsWith("/") && !next.startsWith("//") ? next : "/";
+          router.replace(destination);
         }}
       />
     </main>
