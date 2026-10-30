@@ -8,13 +8,13 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
-  CircleCheck,
   Download,
   ExternalLink,
+  FileDown,
+  FileText,
   Gauge,
   Globe2,
   Images,
-  Info,
   LayoutDashboard,
   LoaderCircle,
   Menu,
@@ -32,14 +32,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import AuthModal from "@/components/auth-modal";
 import ProfileMenu from "@/components/profile-menu";
-import ThemeSwitch from "@/components/theme-switch";
 import { getSupabaseClient } from "@/lib/supabase/client";
 import { formatAuditHistoryError } from "@/lib/audit-history-error";
+import type { Paragraph as DocxParagraph, Table as DocxTable } from "docx";
 
 type Device = "mobile" | "desktop";
 type AuditStatus = "pass" | "warn" | "fail" | "manual";
@@ -47,13 +48,20 @@ type Metric = { display: string | null; value: number | null };
 type Finding = {
   id: string;
   title: string;
-  description: string;
   displayValue: string | null;
   score: number | null;
   status: AuditStatus;
-  savingsMs: number;
-  resources: Record<string, string | number | null>[];
-  category?: string;
+  priority?: "high" | "medium" | "low";
+  recommendation?: string | null;
+  savings?: {
+    overallMs: number | null;
+    lcpMs: number | null;
+    fcpMs: number | null;
+    cls: number | null;
+    inpMs: number | null;
+    bytes: number | null;
+  };
+  resources?: Record<string, string | number | null>[];
 };
 type Speed = {
   error?: string;
@@ -64,39 +72,44 @@ type Speed = {
   metrics?: Record<string, Metric>;
   fieldMetrics?: Record<string, Metric>;
   fieldDataSource?: "url" | "origin" | null;
+  cwvAssessment?: "passed" | "failed" | null;
   opportunities?: Finding[];
   diagnostics?: Finding[];
   accessibilityFindings?: Finding[];
   bestPracticeFindings?: Finding[];
   seoFindings?: Finding[];
-  passed?: Finding[];
-  tips?: { title: string; savingsMs: number }[];
-  insight?: string[];
   filmstrip?: { data: string; timing: number | null }[];
-  technical?: Record<string, unknown>;
 };
-type Check = { id: string; label: string; status: Exclude<AuditStatus, "manual">; value: string; fix?: string };
-type ImageEntry = {
-  src: string;
-  alt: string;
-  width: number | null;
-  height: number | null;
-  format: string;
-  loading: string;
+type Check = {
+  id: string;
+  label: string;
   status: Exclude<AuditStatus, "manual">;
-  issues: string[];
-  recommendation: string;
+  value: string;
+  fix?: string;
+  priority?: "high" | "medium" | "low";
+  resource?: string;
+};
+type PlatformDetection = {
+  name: string;
+  confidence: "high" | "moderate";
+  evidence: string[];
 };
 export type AuditResult = {
   url: string;
   status: number;
   redirects?: number;
-  seoScore: number;
+  platform?: PlatformDetection | null;
+  seoScore?: number | null;
   favicon?: string | null;
   checks: Check[];
-  images?: ImageEntry[];
   screenshots?: { mobile?: string; desktop?: string };
   performance: { mobile: Speed; desktop: Speed };
+};
+type RecentAudit = {
+  id: string;
+  target_url: string;
+  audited_at: string;
+  result: AuditResult;
 };
 type NavItem = { id: string; label: string; icon: LucideIcon };
 
@@ -109,26 +122,24 @@ const NAV_ITEMS: NavItem[] = [
   { id: "accessibility", label: "Accessibility Report", icon: Accessibility },
   { id: "best-practices", label: "Best Practices", icon: ShieldCheck },
   { id: "seo", label: "SEO Report", icon: Globe2 },
-  { id: "passed", label: "Passed Audits", icon: CircleCheck },
-  { id: "technical", label: "Technical Details", icon: Info },
-  { id: "screenshots", label: "Screenshots & Filmstrip", icon: Images },
+  { id: "screenshots", label: "Page load filmstrip", icon: Images },
 ];
 
-const METRIC_INFO: Record<string, { label: string; fullName: string; good: number; poor: number; unit: string; explanation: string }> = {
-  lcp: { label: "LCP", fullName: "Largest Contentful Paint", good: 2500, poor: 4000, unit: "ms", explanation: "Time until the largest visible content element is rendered." },
-  inp: { label: "INP", fullName: "Interaction to Next Paint", good: 200, poor: 500, unit: "ms", explanation: "How quickly the page responds visually to user interactions. Field data only." },
-  cls: { label: "CLS", fullName: "Cumulative Layout Shift", good: 0.1, poor: 0.25, unit: "", explanation: "Measures unexpected movement of visible page content." },
-  fcp: { label: "FCP", fullName: "First Contentful Paint", good: 1800, poor: 3000, unit: "ms", explanation: "Time until the first text or image is rendered." },
-  si: { label: "Speed Index", fullName: "Speed Index", good: 3400, poor: 5800, unit: "ms", explanation: "How quickly page content is visually populated." },
-  tbt: { label: "TBT", fullName: "Total Blocking Time", good: 200, poor: 600, unit: "ms", explanation: "Time the main thread is blocked and unable to respond during loading." },
-  ttfb: { label: "TTFB", fullName: "Time to First Byte", good: 800, poor: 1800, unit: "ms", explanation: "Time between the request and the first response byte. Field data may be unavailable." },
+const METRIC_INFO: Record<string, { label: string; fullName: string }> = {
+  lcp: { label: "LCP", fullName: "Largest Contentful Paint" },
+  inp: { label: "INP", fullName: "Interaction to Next Paint" },
+  cls: { label: "CLS", fullName: "Cumulative Layout Shift" },
+  fcp: { label: "FCP", fullName: "First Contentful Paint" },
+  si: { label: "Speed Index", fullName: "Speed Index" },
+  tbt: { label: "TBT", fullName: "Total Blocking Time" },
+  ttfb: { label: "TTFB", fullName: "Time to First Byte" },
 };
 
 const FEATURES: { icon: LucideIcon; title: string; text: string; color: string }[] = [
-  { icon: Activity, title: "Performance & Core Web Vitals", text: "See lab and field metrics with clear thresholds and device context.", color: "text-cyan-300" },
-  { icon: SearchCheck, title: "SEO & Technical Audits", text: "Review page metadata, crawl signals, images, and Lighthouse SEO checks.", color: "text-indigo-300" },
-  { icon: Accessibility, title: "Accessibility Analysis", text: "Find audited accessibility issues, affected elements, and manual checks.", color: "text-emerald-300" },
-  { icon: Sparkles, title: "Actionable Recommendations", text: "Prioritize Lighthouse opportunities with estimated savings and affected resources.", color: "text-amber-300" },
+  { icon: Activity, title: "Performance & Core Web Vitals", text: "See lab and field metrics with clear thresholds and device context.", color: "text-brand-planning" },
+  { icon: SearchCheck, title: "SEO & Technical Audits", text: "Review page metadata, crawl signals, images, and Lighthouse SEO checks.", color: "text-brand-authoring" },
+  { icon: Accessibility, title: "Accessibility Analysis", text: "Find audited accessibility issues, affected elements, and manual checks.", color: "text-brand-execute" },
+  { icon: Sparkles, title: "Actionable Recommendations", text: "Prioritize Lighthouse opportunities with estimated savings and affected resources.", color: "text-brand-analysis" },
 ];
 
 const LOADING_STAGES = ["Fetching page", "PageSpeed analysis", "Capturing screenshots"] as const;
@@ -146,7 +157,7 @@ function isAuditResult(value: unknown): value is AuditResult {
   const candidate = value as Record<string, unknown>;
   return typeof candidate.url === "string" &&
     typeof candidate.status === "number" &&
-    typeof candidate.seoScore === "number" &&
+    (candidate.seoScore === undefined || typeof candidate.seoScore === "number" || candidate.seoScore === null) &&
     Array.isArray(candidate.checks) &&
     Boolean(candidate.performance && typeof candidate.performance === "object");
 }
@@ -156,6 +167,10 @@ function scoreStatus(score: number | null | undefined) {
   if (score >= 90) return { label: "Good", color: "text-emerald-300", ring: "#10b981" };
   if (score >= 50) return { label: "Needs improvement", color: "text-amber-300", ring: "#f59e0b" };
   return { label: "Poor", color: "text-rose-300", ring: "#ef4444" };
+}
+
+function emptyFindingsMessage(score: number | null | undefined, verifiedMessage: string) {
+  return typeof score === "number" ? verifiedMessage : "PageSpeed category data is unavailable for this run.";
 }
 
 function ScoreCard({ label, score, icon: Icon, section }: { label: string; score: number | null | undefined; icon: LucideIcon; section: string }) {
@@ -198,26 +213,43 @@ function EmptyState({ label }: { label: string }) {
 }
 
 function FindingList({ findings, empty, expandAll = false }: { findings: Finding[]; empty: string; expandAll?: boolean }) {
-  if (!findings.length) return <EmptyState label={empty} />;
+  const actionableFindings = findings.filter((finding) => finding.status === "warn" || finding.status === "fail");
+  if (!actionableFindings.length) return <EmptyState label={empty} />;
   return (
     <div className="space-y-2">
-      {findings.map((finding) => {
-        const status = scoreStatus(finding.score === null ? null : finding.score * 100);
-        const tone = finding.status === "pass" ? "text-emerald-300" : finding.status === "fail" ? "text-rose-300" : finding.status === "manual" ? "text-cyan-300" : "text-amber-300";
+      {actionableFindings.map((finding) => {
+        const resources = finding.resources ?? [];
+        const priority = finding.priority;
+        const priorityTone = priority === "high" ? "text-rose-300" : priority === "medium" ? "text-amber-300" : "text-slate-400";
+        const savings = finding.savings;
+        const savingsItems = savings
+          ? [
+              savings.overallMs !== null && savings.overallMs !== undefined ? `Overall ${savings.overallMs} ms` : null,
+              savings.lcpMs !== null && savings.lcpMs !== undefined ? `LCP ${savings.lcpMs} ms` : null,
+              savings.fcpMs !== null && savings.fcpMs !== undefined ? `FCP ${savings.fcpMs} ms` : null,
+              savings.inpMs !== null && savings.inpMs !== undefined ? `INP ${savings.inpMs} ms` : null,
+              savings.cls !== null && savings.cls !== undefined ? `CLS ${savings.cls}` : null,
+              savings.bytes !== null && savings.bytes !== undefined ? `Bytes ${formatBytes(savings.bytes)}` : null,
+            ].filter((item): item is string => item !== null)
+          : [];
         return (
           <details key={finding.id} open={expandAll || undefined} className="finding-row group rounded-xl border border-white/[0.08] bg-slate-950/20 open:bg-slate-950/35">
             <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3.5">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${finding.status === "pass" ? "bg-emerald-400" : finding.status === "fail" ? "bg-rose-400" : finding.status === "manual" ? "bg-cyan-300" : "bg-amber-400"}`} />
+              <span className={`h-2 w-2 shrink-0 rounded-full ${finding.status === "fail" ? "bg-rose-400" : "bg-amber-400"}`} />
               <span className="min-w-0 flex-1 text-sm font-medium text-slate-100">{finding.title}</span>
               {finding.displayValue && <span className="hidden max-w-[34%] truncate text-xs text-slate-400 sm:block">{finding.displayValue}</span>}
-              {finding.savingsMs > 0 && <span className="shrink-0 rounded-md bg-emerald-400/10 px-2 py-1 font-mono text-[11px] text-emerald-300">-{(finding.savingsMs / 1000).toFixed(2)}s</span>}
-              <span className={`shrink-0 text-[11px] ${tone}`}>{finding.status === "manual" ? "Manual check" : status.label}</span>
+              {priority && <span className={`shrink-0 text-[11px] ${priorityTone}`}>{priority} priority</span>}
               <ChevronDown size={15} className="shrink-0 text-slate-500 transition group-open:rotate-180" />
             </summary>
             <div className="border-t border-white/[0.07] px-4 pb-4 pt-3">
-              {finding.displayValue && <p className="mb-2 text-xs text-cyan-200 sm:hidden">{finding.displayValue}</p>}
-              <p className="text-sm leading-6 text-slate-300">{finding.description || "No further explanation was supplied by Lighthouse."}</p>
-              {finding.resources.length > 0 && <div className="mt-3 space-y-2"><p className="text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Affected items</p>{finding.resources.map((resource, index) => <div key={`${finding.id}-${index}`} className="rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-300">{Object.entries(resource).map(([key, value]) => <div key={key} className="break-all"><span className="text-slate-500">{key}: </span>{String(value)}</div>)}</div>)}</div>}
+              <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Actual issue</p>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{finding.title}{finding.displayValue ? ` — ${finding.displayValue}` : ""}</p>
+              {typeof finding.score === "number" && <p className="mt-2 text-xs text-slate-400">Lighthouse audit score: {Math.round(finding.score * 100)}/100</p>}
+              {savingsItems.length > 0 && <p className="mt-3 text-xs text-emerald-300">PageSpeed potential savings: {savingsItems.join(" · ")}</p>}
+              <p className="mt-3 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Recommended solution</p>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{finding.recommendation || "Insufficient PageSpeed detail for a specific fix."}</p>
+              {finding.id === "uses-optimized-images" && finding.recommendation?.includes("TinyPNG") && <p className="mt-2 text-sm"><a className="underline underline-offset-2" href="https://tinypng.com/" target="_blank" rel="noreferrer">TinyPNG</a><span className="text-slate-400"> · </span><a className="underline underline-offset-2" href="https://tinyjpg.com/" target="_blank" rel="noreferrer">TinyJPG</a></p>}
+              {resources.length > 0 && <div className="mt-3 space-y-2"><p className="text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Affected resources and elements</p>{resources.map((resource, index) => <div key={`${finding.id}-${index}`} className="rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-5 text-slate-300">{Object.entries(resource).map(([key, value]) => <div key={key} className="break-all"><span className="text-slate-500">{key}: </span>{key.toLowerCase().includes("bytes") || key === "transferSize" ? formatBytes(value) : String(value)}</div>)}</div>)}</div>}
             </div>
           </details>
         );
@@ -265,21 +297,25 @@ function formatBytes(bytes: unknown) {
 
 function MetricCards({ speed }: { speed: Speed | undefined }) {
   const keys = ["lcp", "inp", "cls", "fcp", "si", "tbt", "ttfb"];
+  const availableKeys = keys.filter((key) =>
+    typeof speed?.metrics?.[key]?.display === "string" ||
+    typeof speed?.fieldMetrics?.[key]?.display === "string" ||
+    typeof speed?.metrics?.[key]?.value === "number" ||
+    typeof speed?.fieldMetrics?.[key]?.value === "number"
+  );
   return (
     <>
     {speed?.error && <div role="status" className="mb-4 rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 text-sm leading-6 text-amber-100"><p className="font-medium">PageSpeed data unavailable</p><p className="mt-1 text-amber-100/70">{speed.error}</p></div>}
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {keys.map((key) => {
+    {availableKeys.length > 0 ? <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {availableKeys.map((key) => {
         const info = METRIC_INFO[key];
         const lab = speed?.metrics?.[key];
         const field = speed?.fieldMetrics?.[key];
         const value = lab?.display ?? field?.display;
-        const numeric = lab?.value ?? field?.value;
-        const status = typeof numeric !== "number" ? null : numeric <= info.good ? "Good" : numeric <= info.poor ? "Needs improvement" : "Poor";
-        const color = status === "Good" ? "text-emerald-300" : status === "Needs improvement" ? "text-amber-300" : status === "Poor" ? "text-rose-300" : "text-slate-500";
-        return <article key={key} className="rounded-xl border border-white/[0.08] bg-slate-950/25 p-4"><div className="flex items-start justify-between gap-2"><div><p className="font-mono text-xs font-semibold text-cyan-200">{info.label}</p><p className="mt-1 text-[11px] text-slate-500">{info.fullName}</p></div><Info size={14} className="mt-0.5 shrink-0 text-slate-600" aria-label={info.explanation} /></div><p className="mt-4 font-mono text-2xl font-medium tabular-nums text-white">{value ?? "Unavailable"}</p><div className="mt-2 flex items-center justify-between gap-2"><span className={`text-xs ${color}`}>{status ?? "No data"}</span><span className="text-[10px] text-slate-500">{lab?.value !== null && lab?.value !== undefined ? "Lab data" : field?.value !== null && field?.value !== undefined ? "Field data" : "No data"}</span></div><p className="mt-3 text-xs leading-5 text-slate-500">{info.explanation}</p></article>;
+        const hasLabData = typeof lab?.display === "string" || typeof lab?.value === "number";
+        return <article key={key} className="rounded-xl border border-white/[0.08] bg-slate-950/25 p-4"><div className="flex items-start justify-between gap-2"><div><p className="font-mono text-xs font-semibold text-cyan-200">{info.label}</p><p className="mt-1 text-[11px] text-slate-500">{info.fullName}</p></div><span className="text-[10px] uppercase tracking-[0.12em] text-slate-500">{hasLabData ? "Lab data" : "Field data"}</span></div><p className="mt-4 font-mono text-2xl font-medium tabular-nums text-white">{value}</p></article>;
       })}
-    </div>
+    </div> : !speed?.error && <EmptyState label="No performance metrics were returned by PageSpeed." />}
     </>
   );
 }
@@ -290,7 +326,7 @@ function ResultSidebar({ active, collapsed, setCollapsed, drawerOpen, setDrawerO
 }) {
   const content = <>
     <div className={`flex items-center ${collapsed ? "justify-center" : "justify-between"} border-b border-white/[0.07] px-4 py-4`}>
-      {!collapsed && <a href="#top" className="flex items-center gap-2.5 text-white"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/20 text-cyan-300"><Zap size={17} fill="currentColor" /></span><span className="font-semibold">SpeedAudit</span></a>}
+      {!collapsed && <a href="#top" className="flex items-center gap-2.5 text-white"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/20 text-cyan-300"><Zap size={17} fill="currentColor" /></span><span className="font-semibold">AuditPilot</span></a>}
       {collapsed && <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/20 text-cyan-300"><Zap size={17} fill="currentColor" /></span>}
       <button onClick={() => setCollapsed(!collapsed)} className="hidden rounded-lg p-2 text-slate-400 hover:bg-white/5 hover:text-white lg:block" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
       <button onClick={() => setDrawerOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Close navigation"><X size={18} /></button>
@@ -315,9 +351,11 @@ export default function SpeedAuditDashboard() {
   const [url, setUrl] = useState("");
   const [device, setDevice] = useState<Device>("mobile");
   const [result, setResult] = useState<AuditResult | null>(null);
-  const [showCapturedPreviews, setShowCapturedPreviews] = useState(false);
   const [auditedAt, setAuditedAt] = useState<string | null>(null);
   const [lastAudit, setLastAudit] = useState<{ result: AuditResult; auditedAt: string } | null>(null);
+  const [recentAudits, setRecentAudits] = useState<RecentAudit[]>([]);
+  const [recentAuditsLoading, setRecentAuditsLoading] = useState(false);
+  const [recentAuditsError, setRecentAuditsError] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -330,17 +368,22 @@ export default function SpeedAuditDashboard() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [screenshotOpen, setScreenshotOpen] = useState<string | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const auditFormRef = useRef<HTMLFormElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const activeSpeed = result?.performance[device];
+  const pageSpeedTimedOut = /did not finish|timed out|aborted due to timeout/i.test(activeSpeed?.error ?? "");
   const findings = activeSpeed;
-  const localIssues = result?.checks.filter((check) => check.status !== "pass") ?? [];
+  const pageStatusIssues = result?.checks.filter(
+    (check) => check.id === "status" && check.status === "fail"
+  ) ?? [];
+  const coreWebVitalKeys = ["lcp", "inp", "cls", "fcp", "ttfb"] as const;
   const findingsCounts: Record<string, number> = {
     opportunities: findings?.opportunities?.length ?? 0,
     diagnostics: findings?.diagnostics?.length ?? 0,
     accessibility: findings?.accessibilityFindings?.filter((item) => item.status !== "pass").length ?? 0,
     "best-practices": findings?.bestPracticeFindings?.filter((item) => item.status !== "pass").length ?? 0,
-    seo: (findings?.seoFindings?.filter((item) => item.status !== "pass").length ?? 0) + localIssues.length,
-    passed: findings?.passed?.length ?? 0,
+    seo: findings?.seoFindings?.length ?? 0,
   };
 
   useEffect(() => {
@@ -409,7 +452,6 @@ export default function SpeedAuditDashboard() {
         setUrl(data.result.url);
         setAuditedAt(data.audited_at);
         setLastAudit({ result: data.result, auditedAt: data.audited_at });
-        setShowCapturedPreviews(false);
         setActiveSection("overview");
         window.scrollTo({ top: 0 });
       } catch (cause) {
@@ -422,6 +464,63 @@ export default function SpeedAuditDashboard() {
   }, [authReady, user]);
 
   useEffect(() => {
+    if (!authReady) return;
+    if (!user) return;
+
+    const userId = user.id;
+    let active = true;
+    async function loadRecentAudits() {
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setRecentAuditsError("Authentication is not configured.");
+        return;
+      }
+
+      setRecentAuditsLoading(true);
+      setRecentAuditsError("");
+      try {
+        const { data, error: historyError } = await supabase
+          .from("audit_history")
+          .select("id, target_url, audited_at, result")
+          .eq("user_id", userId)
+          .order("audited_at", { ascending: false })
+          .limit(2);
+        if (!active) return;
+        if (historyError) {
+          setRecentAuditsError(formatAuditHistoryError("Could not load your recent audits.", historyError));
+          return;
+        }
+        if (!Array.isArray(data)) {
+          setRecentAuditsError("The recent audit history response was invalid.");
+          return;
+        }
+        const parsed: RecentAudit[] = [];
+        for (const row of data) {
+          if (!row || typeof row.id !== "string" || typeof row.target_url !== "string" ||
+            typeof row.audited_at !== "string" || !isAuditResult(row.result)) {
+            setRecentAuditsError("A recent audit entry could not be read.");
+            return;
+          }
+          parsed.push({
+            id: row.id,
+            target_url: row.target_url,
+            audited_at: row.audited_at,
+            result: row.result,
+          });
+        }
+        setRecentAudits(parsed);
+      } catch (cause) {
+        if (active) setRecentAuditsError(cause instanceof Error ? cause.message : "Could not load your recent audits.");
+      } finally {
+        if (active) setRecentAuditsLoading(false);
+      }
+    }
+
+    void loadRecentAudits();
+    return () => { active = false; };
+  }, [authReady, user]);
+
+  useEffect(() => {
     if (!loading) return;
     const timer = window.setInterval(() => {
       setLoadingStageIndex((index) => (index + 1) % LOADING_STAGES.length);
@@ -430,10 +529,21 @@ export default function SpeedAuditDashboard() {
   }, [loading]);
 
   useEffect(() => {
-    if (!showCapturedPreviews) return;
-    const timer = window.setTimeout(() => setShowCapturedPreviews(false), 3200);
-    return () => window.clearTimeout(timer);
-  }, [showCapturedPreviews]);
+    if (!exportMenuOpen) return;
+    function dismissExportMenu(event: Event) {
+      if (event.type === "keydown" && (event as KeyboardEvent).key === "Escape") {
+        setExportMenuOpen(false);
+      } else if (event.type === "pointerdown" && !(event.target instanceof Node && exportMenuRef.current?.contains(event.target))) {
+        setExportMenuOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", dismissExportMenu);
+    document.addEventListener("keydown", dismissExportMenu);
+    return () => {
+      document.removeEventListener("pointerdown", dismissExportMenu);
+      document.removeEventListener("keydown", dismissExportMenu);
+    };
+  }, [exportMenuOpen]);
 
   useEffect(() => {
     if (!result) return;
@@ -476,13 +586,12 @@ export default function SpeedAuditDashboard() {
     setError("");
     setHistorySaveError("");
     setResult(null);
-    setShowCapturedPreviews(false);
     try {
       const response = await fetch("/api/audit", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({ url: auditUrl }),
-        signal: AbortSignal.timeout(58_000),
+        signal: AbortSignal.timeout(118_000),
       });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) {
@@ -495,7 +604,6 @@ export default function SpeedAuditDashboard() {
       const completedResult = data as AuditResult;
       const completedAt = new Date().toISOString();
       setResult(completedResult);
-      setShowCapturedPreviews(true);
       setUrl(completedResult.url);
       setAuditedAt(completedAt);
       setLastAudit({ result: completedResult, auditedAt: completedAt });
@@ -507,15 +615,22 @@ export default function SpeedAuditDashboard() {
       } else {
         const storedResult = { ...completedResult, screenshots: undefined };
         try {
-          const { error: saveError } = await supabase.from("audit_history").insert({
+          const { data: savedAudit, error: saveError } = await supabase.from("audit_history").insert({
             user_id: user.id,
             target_url: completedResult.url,
             audited_at: completedAt,
             audit_status: "completed",
             result: storedResult,
-          });
+          }).select("id").single();
           if (saveError) {
             setHistorySaveError(formatAuditHistoryError("Audit completed, but it could not be saved to My tests.", saveError));
+          } else {
+            setRecentAudits((current) => [{
+              id: savedAudit.id,
+              target_url: completedResult.url,
+              audited_at: completedAt,
+              result: storedResult,
+            }, ...current.filter((audit) => audit.id !== savedAudit.id)].slice(0, 2));
           }
         } catch (cause) {
           setHistorySaveError(`Audit completed, but it could not be saved to My tests. ${cause instanceof Error ? cause.message : "The history request failed."}`);
@@ -542,7 +657,6 @@ export default function SpeedAuditDashboard() {
         return;
       }
       setResult(null);
-      setShowCapturedPreviews(false);
       router.replace("/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not log out.");
@@ -564,9 +678,9 @@ export default function SpeedAuditDashboard() {
 
   async function shareReport() {
     if (!result) return;
-    const summary = `SpeedAudit report for ${result.url}\nPerformance: ${activeSpeed?.score ?? "Unavailable"}/100 · Accessibility: ${activeSpeed?.accessibility ?? "Unavailable"}/100 · Best Practices: ${activeSpeed?.bestPractices ?? "Unavailable"}/100 · SEO: ${activeSpeed?.seo ?? "Unavailable"}/100`;
+    const summary = `AuditPilot report for ${result.url}\nPerformance: ${activeSpeed?.score ?? "Unavailable"}/100 · Accessibility: ${activeSpeed?.accessibility ?? "Unavailable"}/100 · Best Practices: ${activeSpeed?.bestPractices ?? "Unavailable"}/100 · SEO: ${activeSpeed?.seo ?? "Unavailable"}/100`;
     try {
-      if (navigator.share) await navigator.share({ title: `SpeedAudit report: ${result.url}`, text: summary });
+      if (navigator.share) await navigator.share({ title: `AuditPilot report: ${result.url}`, text: summary });
       else {
         await navigator.clipboard.writeText(summary);
         setCopied(true);
@@ -577,58 +691,348 @@ export default function SpeedAuditDashboard() {
     }
   }
 
-  function exportReport() {
+  function getExportFilename() {
+    if (!result) return "auditpilot-report";
+    return `auditpilot-${new URL(result.url).hostname.replace(/[^a-z0-9.-]/gi, "-")}-${device}`;
+  }
+
+  async function exportDoc() {
     if (!result) return;
-    const file = new Blob([JSON.stringify({ auditedAt, device, ...result }, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(file);
-    link.download = `speedaudit-${new URL(result.url).hostname}-${device}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+    setExportMenuOpen(false);
+    setError("");
+
+    try {
+      const {
+        BorderStyle,
+        Document,
+        HeadingLevel,
+        Packer,
+        Paragraph,
+        Table,
+        TableCell,
+        TableRow,
+        TextRun,
+        WidthType,
+      } = await import("docx");
+      const speed = result.performance[device];
+      const children: (DocxParagraph | DocxTable)[] = [
+        new Paragraph({
+          children: [new TextRun({ text: "AUDITPILOT  /  WEBSITE AUDIT", bold: true, color: "EA580C", size: 18 })],
+          spacing: { after: 160 },
+        }),
+        new Paragraph({
+          text: "Website audit report",
+          heading: HeadingLevel.TITLE,
+          spacing: { after: 120 },
+        }),
+        new Paragraph({ children: [new TextRun({ text: result.url, bold: true, color: "121212" })], spacing: { after: 100 } }),
+        new Paragraph({
+          children: [new TextRun({
+            text: `Device: ${device}  |  Audited: ${auditedAt ? new Date(auditedAt).toLocaleString() : "Unavailable"}  |  HTTP status: ${result.status}${result.platform?.name ? `  |  Built with: ${result.platform.name}` : ""}`,
+            color: "5F5F5F",
+            size: 18,
+          })],
+          spacing: { after: 260 },
+        }),
+        new Paragraph({ text: "Score summary", heading: HeadingLevel.HEADING_1, spacing: { before: 160, after: 120 } }),
+      ];
+
+      const scoreCells = [
+        ["Performance", speed.score],
+        ["Accessibility", speed.accessibility],
+        ["Best Practices", speed.bestPractices],
+        ["SEO", speed.seo],
+      ].map(([label, score]) => new TableCell({
+        width: { size: 25, type: WidthType.PERCENTAGE },
+        margins: { top: 120, bottom: 120, left: 120, right: 120 },
+        children: [
+          new Paragraph({ children: [new TextRun({ text: String(label), color: "5F5F5F", size: 18 })] }),
+          new Paragraph({ children: [new TextRun({ text: typeof score === "number" ? `${score}/100` : "Unavailable", bold: true, color: "121212", size: 24 })] }),
+        ],
+      }));
+      children.push(new Table({
+        rows: [new TableRow({ children: scoreCells })],
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+          bottom: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+          left: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+          right: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+          insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+          insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E3E1DB" },
+        },
+      }));
+
+      const metrics = Object.keys(METRIC_INFO).filter((key) => {
+        return typeof speed.metrics?.[key]?.display === "string" ||
+          typeof speed.fieldMetrics?.[key]?.display === "string";
+      });
+      if (metrics.length) {
+        children.push(new Paragraph({ text: "Available performance metrics", heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 120 } }));
+        metrics.forEach((key) => {
+          const metric = speed.metrics?.[key] ?? speed.fieldMetrics?.[key];
+          const source = speed.metrics?.[key]?.display ? "Lab data" : "Field data";
+          children.push(new Paragraph({
+            children: [
+              new TextRun({ text: `${METRIC_INFO[key].label} (${METRIC_INFO[key].fullName}): `, bold: true }),
+              new TextRun({ text: `${metric?.display ?? "Unavailable"} (${source})`, color: "5F5F5F" }),
+            ],
+            bullet: { level: 0 },
+            spacing: { after: 60 },
+          }));
+        });
+      }
+
+      const categories = [
+        { title: "Opportunities", findings: speed.opportunities ?? [], score: speed.score },
+        { title: "Diagnostics", findings: speed.diagnostics ?? [], score: speed.score },
+        { title: "Accessibility", findings: speed.accessibilityFindings ?? [], score: speed.accessibility },
+        { title: "Best Practices", findings: speed.bestPracticeFindings ?? [], score: speed.bestPractices },
+        { title: "SEO", findings: speed.seoFindings ?? [], score: speed.seo },
+      ];
+      categories.forEach(({ title, findings, score }) => {
+        children.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 120 } }));
+        const actionableFindings = findings.filter((finding) => finding.status === "warn" || finding.status === "fail");
+        if (!actionableFindings.length) {
+          children.push(new Paragraph({
+            children: [new TextRun({
+              text: typeof score === "number" ? "No failing audits were reported." : "Category data is unavailable for this run.",
+              color: "5F5F5F",
+            })],
+            spacing: { after: 100 },
+          }));
+          return;
+        }
+
+        actionableFindings.forEach((finding) => {
+          children.push(new Paragraph({
+            text: finding.title,
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 120, after: 80 },
+          }));
+          const addDetail = (label: string, value: string) => {
+            children.push(new Paragraph({
+              children: [new TextRun({ text: `${label}: `, bold: true }), new TextRun({ text: value })],
+              indent: { left: 240 },
+              spacing: { after: 60 },
+            }));
+          };
+          if (finding.displayValue) addDetail("Measured value", finding.displayValue);
+          if (finding.priority) addDetail("Priority", finding.priority);
+          if (finding.savings) {
+            const savings = Object.entries(finding.savings)
+              .filter(([, value]) => value !== null && value !== undefined)
+              .map(([key, value]) => `${key}: ${key === "bytes" ? formatBytes(value) : value}`)
+              .join(" | ");
+            if (savings) addDetail("PageSpeed potential savings", savings);
+          }
+          if (finding.recommendation) addDetail("Recommended solution", finding.recommendation);
+          finding.resources?.forEach((resource) => {
+            const details = Object.entries(resource)
+              .map(([key, value]) => `${key}: ${value ?? "Unavailable"}`)
+              .join(" | ");
+            addDetail("Affected resource", details);
+          });
+        });
+      });
+
+      const document = new Document({
+        sections: [{
+          properties: {
+            page: {
+              margin: { top: 720, right: 720, bottom: 720, left: 720 },
+            },
+          },
+          children,
+        }],
+      });
+      const file = await Packer.toBlob(document);
+      const objectUrl = URL.createObjectURL(file);
+      const link = window.document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${getExportFilename()}.docx`;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? `Could not create the DOCX report. ${cause.message}` : "Could not create the DOCX report.");
+    }
+  }
+
+  async function exportPdf() {
+    if (!result) return;
+    setExportMenuOpen(false);
+    setError("");
+
+    try {
+      const { jsPDF } = await import("jspdf");
+      const pdf = new jsPDF({ format: "a4", unit: "pt" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 44;
+      const contentWidth = pageWidth - margin * 2;
+      let y = margin;
+
+      function addText(text: string, options?: { size?: number; bold?: boolean; color?: [number, number, number]; indent?: number; gap?: number }) {
+        const { size = 10, bold = false, color = [95, 95, 95], indent = 0, gap = 5 } = options ?? {};
+        pdf.setFont("helvetica", bold ? "bold" : "normal");
+        pdf.setFontSize(size);
+        pdf.setTextColor(...color);
+        const lines = pdf.splitTextToSize(text, contentWidth - indent);
+        const lineHeight = size * 1.45;
+        if (y + lines.length * lineHeight > pageHeight - margin) {
+          pdf.addPage();
+          y = margin;
+        }
+        pdf.text(lines, margin + indent, y);
+        y += lines.length * lineHeight + gap;
+      }
+
+      function addSection(title: string) {
+        if (y + 40 > pageHeight - margin) {
+          pdf.addPage();
+          y = margin;
+        }
+        y += 8;
+        pdf.setDrawColor(227, 225, 219);
+        pdf.line(margin, y, pageWidth - margin, y);
+        y += 19;
+        addText(title, { size: 15, bold: true, color: [18, 18, 18], gap: 7 });
+      }
+
+      const speed = result.performance[device];
+      addText("AUDITPILOT  /  WEBSITE AUDIT", { size: 9, bold: true, color: [234, 88, 12], gap: 8 });
+      addText("Website audit report", { size: 24, bold: true, color: [18, 18, 18], gap: 5 });
+      addText(result.url, { size: 11, color: [18, 18, 18], gap: 4 });
+      addText(`Device: ${device}  |  Audited: ${auditedAt ? new Date(auditedAt).toLocaleString() : "Unavailable"}  |  HTTP status: ${result.status}${result.platform?.name ? `  |  Built with: ${result.platform.name}` : ""}`, { size: 9, gap: 12 });
+
+      addSection("Category scores");
+      const scoreColumns = [
+        ["Performance", speed.score],
+        ["Accessibility", speed.accessibility],
+        ["Best Practices", speed.bestPractices],
+        ["SEO", speed.seo],
+      ] as const;
+      scoreColumns.forEach(([label, score]) => {
+        addText(`${label}: ${typeof score === "number" ? `${score}/100` : "Unavailable"}`, { size: 10, bold: true, color: [18, 18, 18], indent: 8, gap: 3 });
+      });
+
+      const metricKeys = Object.keys(METRIC_INFO);
+      const availableMetrics = metricKeys.filter((key) => {
+        const metric = speed.metrics?.[key];
+        const fieldMetric = speed.fieldMetrics?.[key];
+        return typeof metric?.display === "string" || typeof fieldMetric?.display === "string";
+      });
+      if (availableMetrics.length) {
+        addSection("Available performance metrics");
+        availableMetrics.forEach((key) => {
+          const metric = speed.metrics?.[key] ?? speed.fieldMetrics?.[key];
+          const source = speed.metrics?.[key]?.display ? "Lab" : "Field";
+          addText(`${METRIC_INFO[key].label} (${METRIC_INFO[key].fullName}): ${metric?.display ?? "Unavailable"} [${source}]`, { size: 9, indent: 8, gap: 3 });
+        });
+      }
+
+      const categories = [
+        { title: "Opportunities", findings: speed.opportunities ?? [], score: speed.score },
+        { title: "Diagnostics", findings: speed.diagnostics ?? [], score: speed.score },
+        { title: "Accessibility", findings: speed.accessibilityFindings ?? [], score: speed.accessibility },
+        { title: "Best Practices", findings: speed.bestPracticeFindings ?? [], score: speed.bestPractices },
+        { title: "SEO", findings: speed.seoFindings ?? [], score: speed.seo },
+      ];
+      categories.forEach(({ title, findings, score }) => {
+        addSection(title);
+        const actionableFindings = findings.filter((finding) => finding.status === "warn" || finding.status === "fail");
+        if (!actionableFindings.length) {
+          addText(typeof score === "number" ? "No failing audits were reported." : "Category data is unavailable for this run.", { size: 9, indent: 8, gap: 3 });
+          return;
+        }
+        actionableFindings.forEach((finding) => {
+          addText(finding.title, { size: 11, bold: true, color: [18, 18, 18], indent: 8, gap: 4 });
+          if (finding.displayValue) addText(`Measured value: ${finding.displayValue}`, { size: 9, indent: 16, gap: 3 });
+          if (finding.priority) addText(`Priority: ${finding.priority}`, { size: 9, indent: 16, gap: 3 });
+          if (finding.savings) {
+            const savings = Object.entries(finding.savings)
+              .filter(([, value]) => value !== null && value !== undefined)
+              .map(([key, value]) => `${key}: ${key === "bytes" ? formatBytes(value) : value}`)
+              .join(" | ");
+            if (savings) addText(`PageSpeed potential savings: ${savings}`, { size: 9, indent: 16, gap: 3 });
+          }
+          if (finding.recommendation) addText(`Recommended solution: ${finding.recommendation}`, { size: 9, indent: 16, gap: 3 });
+          finding.resources?.forEach((resource) => {
+            const details = Object.entries(resource).map(([key, value]) => `${key}: ${value ?? "Unavailable"}`).join(" | ");
+            addText(`Affected resource: ${details}`, { size: 8, indent: 16, gap: 3 });
+          });
+          y += 5;
+        });
+      });
+
+      const pageCount = pdf.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        pdf.setPage(page);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(122, 122, 122);
+        pdf.text(`AuditPilot  |  ${page} / ${pageCount}`, pageWidth - margin, pageHeight - 20, { align: "right" });
+      }
+      pdf.save(`${getExportFilename()}.pdf`);
+    } catch (cause) {
+      setError(cause instanceof Error ? `Could not create the PDF report. ${cause.message}` : "Could not create the PDF report.");
+    }
   }
 
   const mobileScreenshot = result?.screenshots?.mobile;
   const desktopScreenshot = result?.screenshots?.desktop;
-  const unavailableFindings = (message: string) => <EmptyState label={message} />;
 
   return (
     <main id="top" className="min-h-screen bg-[#080f20] text-slate-100">
       <div className="ambient-lines" aria-hidden="true"><i /><i /><i /></div>
-      {!result || showCapturedPreviews ? (
+      {!result ? (
         <>
           <header className="site-header relative z-40 border-b border-white/[0.07]">
             <div className="mx-auto flex min-h-[76px] max-w-[1320px] items-center justify-between gap-4 px-5 lg:px-8">
-              <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">SpeedAudit</span></a>
+              <a href="#home" className="flex shrink-0 items-center gap-2.5 text-white"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span><span className="text-[17px] font-semibold">AuditPilot</span></a>
               <nav className="hidden items-center gap-8 text-sm text-slate-400 md:flex" aria-label="Main navigation"><a href="#home" className="hover:text-white">Home</a><a href="#features" className="hover:text-white">Features</a><a href="#pricing" className="hover:text-white">Pricing</a><a href="#recent" className="hover:text-white">Reports</a></nav>
-              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<ThemeSwitch /><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="hidden min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white transition hover:brightness-110 sm:flex"><Zap size={15} />Start audit</button></div>
+              <div className="flex shrink-0 items-center gap-2">{user ? <ProfileMenu user={user} onSignOut={() => void signOut()} /> : <button onClick={() => setAuthModalOpen(true)} className="min-h-10 rounded-xl px-3 text-sm text-slate-300 transition hover:bg-white/5 hover:text-white">Sign in</button>}<button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="primary-button hidden sm:flex"><Zap size={15} />Start audit</button></div>
             </div>
           </header>
 
-          <section id="home" className="hero-section relative mx-auto grid max-w-[1320px] items-center gap-12 px-5 pb-16 pt-14 lg:min-h-[690px] lg:grid-cols-[1.05fr_.95fr] lg:px-8 lg:py-20">
-            <div className="relative z-10 max-w-2xl">
+          <section id="home" className="hero-section relative w-full px-5 py-16 sm:py-20 lg:min-h-[690px] lg:px-8 lg:py-24">
+            <div className="relative z-10 mx-auto flex max-w-3xl flex-col items-center text-center">
               <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-indigo-400/20 bg-indigo-400/[0.07] px-3 py-1.5 text-xs text-indigo-100"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />Website performance intelligence</div>
-              <h1 className="max-w-[680px] text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-5xl">Performance insights for a <span className="text-gradient">faster, healthier website.</span></h1>
-              <p className="mt-6 max-w-xl text-base leading-7 text-slate-400">Analyze website speed, Core Web Vitals, SEO, accessibility, and technical issues in one comprehensive report.</p>
+              <h1 className="max-w-[760px] text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-5xl">Performance insights for a <span className="text-gradient">faster, healthier website.</span></h1>
+              <p className="mt-6 max-w-2xl text-base leading-7 text-slate-400">Analyze website speed, Core Web Vitals, SEO, accessibility, and technical issues in one comprehensive report.</p>
 
-              <form ref={auditFormRef} onSubmit={runAudit} className="audit-form mt-8 rounded-2xl border border-white/10 bg-[#0b1428]/80 p-2.5 shadow-2xl shadow-black/25 backdrop-blur-xl">
+              <form ref={auditFormRef} onSubmit={runAudit} className="audit-form mt-8 w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b1428]/80 p-2.5 shadow-2xl shadow-black/25 backdrop-blur-xl">
                 <label htmlFor="audit-url" className="sr-only">Website URL</label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <div className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3"><Globe2 size={18} className="shrink-0 text-slate-500" /><input id="audit-url" type="url" inputMode="url" autoComplete="url" spellCheck={false} required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://yourwebsite.com" className="h-12 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500" /></div>
-                  <button type="submit" disabled={loading || !authReady || !url.trim()} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-5 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{loading ? <LoaderCircle size={16} className="animate-spin" /> : <Zap size={16} />}{loading ? "Auditing" : "Run Audit"}</button>
+                  <button type="submit" disabled={loading || !authReady || !url.trim()} className="primary-button disabled:cursor-not-allowed disabled:opacity-50">{loading ? <LoaderCircle size={16} className="animate-spin" /> : <Zap size={16} />}{loading ? "Auditing" : "Run Audit"}</button>
                 </div>
               </form>
 
-              {loading && <div role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4"><div className="flex items-center justify-between text-xs text-slate-300"><span>Running live audit</span><span>Usually under a minute</span></div><div className="loading-track mt-3"><i /></div><div className="mt-3 min-h-5 text-xs text-cyan-100"><span key={loadingStageIndex} className="loading-stage-text inline-flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />{LOADING_STAGES[loadingStageIndex]}</span></div></div>}
+              {loading && (
+                <div role="status" aria-live="polite" aria-atomic="true" className="audit-progress mt-4 w-full max-w-2xl">
+                  <div className="audit-progress-header">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="audit-progress-icon" aria-hidden="true">
+                        <LoaderCircle size={18} className="animate-spin" />
+                      </span>
+                      <p className="audit-progress-title">Running live audit</p>
+                    </div>
+                    <span className="audit-progress-eta">Usually under a minute</span>
+                  </div>
+                  <div className="loading-track" aria-hidden="true"><i /></div>
+                  <div className="audit-progress-stage">
+                    <span className="audit-progress-dot" aria-hidden="true" />
+                    <span>Current step</span>
+                    <span key={loadingStageIndex} className="loading-stage-text">{LOADING_STAGES[loadingStageIndex]}</span>
+                  </div>
+                </div>
+              )}
               {error && <div role="alert" className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.06] p-4 text-sm text-rose-100"><span>{error}</span><button onClick={() => runAudit()} className="shrink-0 font-medium underline underline-offset-2">Retry</button></div>}
 
-              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />{user ? "Signed in" : "Sign in required to run an audit"}</span></div>
-            </div>
-
-            <div className="device-showcase relative mx-auto grid w-full max-w-[690px] grid-cols-[.65fr_1.35fr] items-end gap-3 sm:gap-6 lg:gap-4">
-              <div className="relative z-10"><DevicePreview device="mobile" screenshot={showCapturedPreviews ? result?.screenshots?.mobile : undefined} /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">{showCapturedPreviews && result?.screenshots?.mobile ? "Mobile · captured" : "Mobile preview"}</p></div>
-              <div className="relative"><DevicePreview device="desktop" screenshot={showCapturedPreviews ? result?.screenshots?.desktop : undefined} /><p className="mt-3 text-center text-[10px] uppercase tracking-[0.16em] text-slate-500">{showCapturedPreviews && result?.screenshots?.desktop ? "Desktop · captured" : "Desktop preview"}</p></div>
-              <div className="absolute -inset-x-10 bottom-10 -z-10 h-48 rounded-full bg-indigo-500/[0.08] blur-3xl" />
-              <p className="col-span-2 mt-1 text-center text-[10px] text-slate-600">{showCapturedPreviews ? "Captured screenshots are shown where available. Opening your full report…" : "Illustrative previews only. Real device screenshots appear after an audit."}</p>
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Mobile & desktop</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />Lighthouse-powered</span><span className="inline-flex items-center gap-1.5"><Check size={14} className="text-emerald-400" />{user ? "Signed in" : "Sign in required to run an audit"}</span></div>
             </div>
           </section>
 
@@ -645,13 +1049,13 @@ export default function SpeedAuditDashboard() {
               </div>
               <div className="grid gap-4 md:grid-cols-3">
                 {PRICING_PLANS.map((plan) => (
-                  <article key={plan.name} className={`flex h-full flex-col rounded-2xl border p-5 sm:p-6 ${plan.name === "Starter" ? "border-indigo-400/40 bg-gradient-to-b from-indigo-500/[0.12] to-cyan-500/[0.035] shadow-xl shadow-indigo-950/20" : "border-white/[0.08] bg-white/[0.025]"}`}>
+                  <article key={plan.name} className="flex h-full flex-col rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5 sm:p-6">
                     <div className="flex items-center justify-between gap-3">
                       <h3 className="text-lg font-semibold text-white">{plan.name}</h3>
                       {plan.name === "Starter" && <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-cyan-200">Popular</span>}
                     </div>
                     <p className="mt-4 flex items-baseline gap-1"><span className="text-4xl font-semibold tracking-tight text-white">${plan.price}</span><span className="text-sm text-slate-400">/ month</span></p>
-                    <div className="mt-5 space-y-3 border-t border-white/[0.08] pt-5 text-sm">
+                    <div className="mt-5 space-y-3 border-t border-white/[0.08] pt-5 pb-5 text-sm">
                       <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Audit tests</span><span className="font-medium text-white">{plan.audits}</span></p>
                       <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Export results as PDF</span><span className={plan.pdf ? "font-medium text-emerald-300" : "text-slate-500"}>{plan.pdf ? "Yes" : "No"}</span></p>
                       <p className="flex items-center justify-between gap-3"><span className="text-slate-300">Export results as DOC</span><span className={plan.doc ? "font-medium text-emerald-300" : "text-slate-500"}>{plan.doc ? "Yes" : "No"}</span></p>
@@ -667,11 +1071,47 @@ export default function SpeedAuditDashboard() {
           </section>
 
           <section id="recent" className="mx-auto grid max-w-[1320px] gap-8 px-5 py-16 lg:grid-cols-[1.2fr_.8fr] lg:px-8">
-            <div><SectionHeading eyebrow="Reports" title="Recent audits" description="The latest audit is retained in this browser session only. Persistent report history is not enabled." /><div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5">{lastAudit ? <button onClick={() => { setResult(lastAudit.result); setAuditedAt(lastAudit.auditedAt); setUrl(lastAudit.result.url); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="flex w-full items-center justify-between gap-4 text-left"><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{lastAudit.result.url}</p><p className="mt-1 text-xs text-slate-500">{new Date(lastAudit.auditedAt).toLocaleString()}</p></div><span className="rounded-lg border border-white/10 px-3 py-2 text-xs text-cyan-200">Open report</span></button> : <div className="flex items-center gap-3 text-sm text-slate-400"><CalendarClock size={17} className="text-slate-500" />Your completed audits will appear here during this session.</div>}</div></div>
-            <div id="dashboard" className="rounded-2xl border border-indigo-400/15 bg-gradient-to-br from-indigo-500/[0.10] to-cyan-500/[0.04] p-6"><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">Ready when you are</p><h2 className="mt-3 text-xl font-semibold text-white">Know what is slowing your site down.</h2><p className="mt-2 text-sm leading-6 text-slate-400">Run a mobile and desktop audit to get a prioritized, evidence-based report.</p><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-white">Start your audit <ArrowUpRight size={15} /></button></div>
+            <div>
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <SectionHeading eyebrow="Reports" title="Recent audits" description={user ? "Your two latest saved website audits." : "Your latest audit is available during this browser session."} />
+                {user && <Link href="/my-tests" className="secondary-button inline-flex shrink-0 items-center gap-2">View all <ArrowUpRight size={15} /></Link>}
+              </div>
+              <div className="recent-audit-card space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5">
+                {user ? recentAuditsLoading ? (
+                  <div role="status" className="flex items-center gap-3 text-sm text-slate-400"><LoaderCircle size={16} className="animate-spin text-cyan-300" />Loading your recent audits…</div>
+                ) : recentAuditsError ? (
+                  <p role="alert" className="text-sm text-rose-200">{recentAuditsError}</p>
+                ) : recentAudits.length ? recentAudits.map((audit) => (
+                  <div key={audit.id} className="flex items-center justify-between gap-4 border-b border-white/[0.07] pb-3 last:border-0 last:pb-0">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">{audit.target_url}</p>
+                      <p className="mt-1 text-xs text-slate-500">{new Date(audit.audited_at).toLocaleString()}</p>
+                    </div>
+                    <button type="button" onClick={() => {
+                      setResult(audit.result);
+                      setAuditedAt(audit.audited_at);
+                      setLastAudit({ result: audit.result, auditedAt: audit.audited_at });
+                      setUrl(audit.target_url);
+                      setActiveSection("overview");
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }} className="shrink-0 rounded-lg border border-white/10 px-3 py-2 text-xs text-cyan-200">Open report</button>
+                  </div>
+                )) : (
+                  <div className="flex items-center gap-3 text-sm text-slate-400"><CalendarClock size={17} className="text-slate-500" />Your saved audits will appear here after you complete one.</div>
+                ) : lastAudit ? (
+                  <button type="button" onClick={() => { setResult(lastAudit.result); setAuditedAt(lastAudit.auditedAt); setUrl(lastAudit.result.url); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="flex w-full items-center justify-between gap-4 text-left">
+                    <div className="min-w-0"><p className="truncate text-sm font-medium text-white">{lastAudit.result.url}</p><p className="mt-1 text-xs text-slate-500">{new Date(lastAudit.auditedAt).toLocaleString()}</p></div>
+                    <span className="shrink-0 rounded-lg border border-white/10 px-3 py-2 text-xs text-cyan-200">Open report</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3 text-sm text-slate-400"><CalendarClock size={17} className="text-slate-500" />Your completed audits will appear here during this session.</div>
+                )}
+              </div>
+            </div>
+            <div id="dashboard" className="recent-cta rounded-2xl border border-white/[0.08] bg-white/[0.025] p-6"><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">Ready when you are</p><h2 className="mt-3 text-xl font-semibold text-white">Know what is slowing your site down.</h2><p className="mt-2 text-sm leading-6 text-slate-400">Run a mobile and desktop audit to get a prioritized, evidence-based report.</p><button onClick={() => auditFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })} className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-white">Start your audit <ArrowUpRight size={15} /></button></div>
           </section>
 
-          <footer className="border-t border-white/[0.06] px-5 py-6 text-center text-xs text-slate-600">© 2026 SpeedAudit. Built for clearer web performance decisions.</footer>
+          <footer className="border-t border-white/[0.06] px-5 py-6 text-center text-xs text-slate-600">© 2026 AuditPilot. Built for clearer web performance decisions.</footer>
         </>
       ) : (
         <div className="relative mx-auto flex max-w-[1680px] gap-5 px-3 py-4 sm:px-5 lg:px-6">
@@ -679,75 +1119,154 @@ export default function SpeedAuditDashboard() {
           <div className="min-w-0 flex-1">
             <div className="glass-panel sticky top-3 z-30 mb-5 flex min-h-14 items-center justify-between gap-3 rounded-xl px-3 py-2 sm:px-4">
               <div className="flex min-w-0 items-center gap-2"><button onClick={() => setDrawerOpen(true)} className="rounded-lg p-2 text-slate-400 hover:bg-white/5 lg:hidden" aria-label="Open report navigation"><Menu size={19} /></button><div className="min-w-0"><p className="truncate text-sm font-medium text-white">{result.url}</p><p className="hidden text-[11px] text-slate-500 sm:block">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit completed"} · {result.status} response · {result.redirects ?? "n/a"} redirects</p></div></div>
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2">{user && <ProfileMenu user={user} onSignOut={() => void signOut()} />}<ThemeSwitch /><button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button><button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button><button onClick={exportReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3"><Download size={14} /><span className="hidden sm:inline">Export</span></button></div>
+              <div className="hidden shrink-0 lg:block"><DeviceSelector device={device} onChange={setDevice} /></div>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+                {user && <ProfileMenu user={user} onSignOut={() => void signOut()} />}
+                <button onClick={() => runAudit()} disabled={loading} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 sm:px-3"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Re-run Audit</span></button>
+                <button onClick={shareReport} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 text-xs text-slate-300 hover:bg-white/[0.08] sm:px-3"><Share2 size={14} /><span className="hidden sm:inline">{copied ? "Copied" : "Share"}</span></button>
+                <div ref={exportMenuRef} className="relative">
+                  <button type="button" aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen((open) => !open)} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-indigo-500/20 px-2.5 text-xs text-indigo-100 hover:bg-indigo-500/30 sm:px-3">
+                    <Download size={14} /><span>Export</span><ChevronDown size={13} className={`transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {exportMenuOpen && <div role="menu" aria-label="Export report" className="absolute right-0 top-full z-50 mt-2 w-48 overflow-hidden rounded-xl border border-white/10 bg-[#101a2d] p-1.5 shadow-xl shadow-black/30">
+                    <button type="button" role="menuitem" onClick={exportDoc} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-slate-200 hover:bg-white/[0.07]"><FileText size={15} className="text-slate-400" />Export as DOCX</button>
+                    <button type="button" role="menuitem" onClick={exportPdf} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-slate-200 hover:bg-white/[0.07]"><FileDown size={15} className="text-slate-400" />Export as a PDF</button>
+                  </div>}
+                </div>
+              </div>
             </div>
 
             <div className="space-y-5">
+              {error && <p role="alert" className="rounded-xl border border-rose-400/20 bg-rose-400/[0.06] p-3 text-sm text-rose-200">{error}</p>}
               {historySaveError && <p role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-3 text-sm text-amber-200">{historySaveError}</p>}
               <section id="overview" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                  <div className="flex min-w-0 items-center gap-3">{result.favicon ? <Image src={result.favicon} alt="" width={40} height={40} unoptimized className="h-10 w-10 rounded-xl border border-white/10 bg-white/5 p-2" /> : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200"><Globe2 size={18} /></span>}<div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="max-w-full break-all text-lg font-semibold text-white">{new URL(result.url).hostname}</p><a href={result.url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-cyan-300" aria-label="Open audited website"><ExternalLink size={15} /></a></div><p className="mt-1 truncate text-xs text-slate-500">{result.url}</p></div></div>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between xl:justify-end"><span className="text-xs text-slate-500">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit time unavailable"}</span><DeviceSelector device={device} onChange={setDevice} /></div>
+                  <div className="flex min-w-0 items-center gap-3">{result.favicon ? <Image src={result.favicon} alt="" width={40} height={40} unoptimized className="h-10 w-10 rounded-xl border border-white/10 bg-white/5 p-2" /> : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-cyan-200"><Globe2 size={18} /></span>}<div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="max-w-full break-all text-lg font-semibold text-white">{new URL(result.url).hostname}</p><a href={result.url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-cyan-300" aria-label="Open audited website"><ExternalLink size={15} /></a></div><p className="mt-1 truncate text-xs text-slate-500">{result.url}</p><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"><span className="font-medium text-slate-500">Built with</span>{result.platform ? <><span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 font-medium text-orange-800">{result.platform.name}</span><span className="text-slate-500">{result.platform.confidence === "high" ? "Strong match" : "Likely match"}</span></> : <span className="text-slate-500">Not detected from available site markers</span>}</div></div></div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between xl:justify-end"><span className="text-xs text-slate-500">{auditedAt ? new Date(auditedAt).toLocaleString() : "Audit time unavailable"}</span><div className="lg:hidden"><DeviceSelector device={device} onChange={setDevice} /></div></div>
                 </div>
-                <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><ScoreCard label="Performance" score={activeSpeed?.score} icon={Gauge} section="performance" /><ScoreCard label="Accessibility" score={activeSpeed?.accessibility} icon={Accessibility} section="accessibility" /><ScoreCard label="Best Practices" score={activeSpeed?.bestPractices} icon={ShieldCheck} section="best-practices" /><ScoreCard label="SEO" score={activeSpeed?.seo ?? result.seoScore} icon={SearchCheck} section="seo" /></div>
-                <div className="mt-6 rounded-xl border border-white/[0.07] bg-slate-950/20 p-4"><div className="mb-3 flex items-center justify-between"><p className="text-sm font-medium text-white">{device === "mobile" ? "Mobile" : "Desktop"} device preview</p><span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{result.screenshots?.[device] ? "Actual audit capture" : "Screenshot unavailable"}</span></div><div className="mx-auto max-w-[680px]"><DevicePreview device={device} screenshot={result.screenshots?.[device]} /></div></div>
-              </section>
-
-              <section id="performance" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow={`${device} lab audit`} title="Performance" description="Scores and measurements are from the selected device's PageSpeed Insights run. Missing results are shown as unavailable." /><div className="mb-5 grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><p className="text-xs text-slate-500">Performance score</p><p className="mt-2 font-mono text-3xl text-white">{activeSpeed?.score ?? "Unavailable"}<span className="ml-1 text-sm text-slate-500">{activeSpeed?.score !== null && activeSpeed?.score !== undefined ? "/100" : ""}</span></p><p className={`mt-2 text-xs ${scoreStatus(activeSpeed?.score).color}`}>{scoreStatus(activeSpeed?.score).label}</p></div><div className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><p className="text-xs text-slate-500">Audit strategy</p><p className="mt-2 font-mono text-xl capitalize text-white">{device}</p><p className="mt-2 text-xs text-slate-500">Separate PageSpeed run</p></div><div className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><p className="text-xs text-slate-500">Top opportunity</p><p className="mt-2 line-clamp-2 text-sm text-white">{activeSpeed?.opportunities?.[0]?.title ?? "No opportunity data"}</p><p className="mt-2 text-xs text-slate-500">{activeSpeed?.opportunities?.[0] ? `Potential ${Math.round(activeSpeed.opportunities[0].savingsMs)} ms savings` : "Unavailable for this audit"}</p></div></div><MetricCards speed={activeSpeed} />{activeSpeed?.insight?.length ? <div className="mt-4 space-y-2">{activeSpeed.insight.map((line) => <p key={line} className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.035] px-3 py-2 text-xs leading-5 text-cyan-100/80">{line}</p>)}</div> : null}</section>
-
-              <section id="vitals" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Real-user and lab signals" title="Core Web Vitals" description="Field data reflects eligible real-user visits; lab data is a controlled Lighthouse run. Field data may not be available for every URL." /><div className="mb-3 text-[10px] uppercase tracking-[0.12em] text-slate-500">Source: {activeSpeed?.fieldDataSource === "url" ? "this URL" : activeSpeed?.fieldDataSource === "origin" ? "origin aggregate" : "unavailable"} · 75th percentile</div><div className="grid gap-4 lg:grid-cols-2">{(["lcp", "inp", "cls"] as const).map((key) => { const metric = activeSpeed?.fieldMetrics?.[key]; const info = METRIC_INFO[key]; return <div key={key} className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><div className="flex items-center justify-between"><span className="font-mono text-sm text-cyan-200">{info.label}</span><span className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Field data</span></div><p className="mt-3 font-mono text-2xl text-white">{metric?.display ?? "Unavailable"}</p><p className="mt-2 text-xs leading-5 text-slate-400">{info.explanation}</p></div>; })}</div><p className="mt-4 rounded-lg border border-amber-400/10 bg-amber-400/[0.035] px-3 py-2 text-xs leading-5 text-slate-400">INP and field Core Web Vitals require sufficient Chrome UX Report data. When unavailable, Lighthouse lab metrics remain separate and are not substituted for field data.</p></section>
-
-              <section id="opportunities" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Potential improvements" title="Opportunities" description="Lighthouse opportunities include estimated savings and affected resources when supplied by PageSpeed." count={activeSpeed?.opportunities?.length ?? 0} /><FindingList findings={activeSpeed?.opportunities ?? []} empty="No opportunity details were returned for this device, or the audit did not identify savings." /></section>
-
-              <section id="diagnostics" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Investigation" title="Diagnostics" description="Diagnostic audits include available main-thread, JavaScript, payload, DOM, layout, and resource details." count={activeSpeed?.diagnostics?.length ?? 0} /><FindingList findings={activeSpeed?.diagnostics ?? []} empty="No diagnostic findings were returned by Lighthouse." /></section>
-
-              <section id="accessibility" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Inclusive experience" title="Accessibility Report" description="Lighthouse flags automated checks; manual audits still need human verification." count={activeSpeed?.accessibilityFindings?.filter((item) => item.status !== "pass").length ?? 0} /><div className="mb-4 flex items-center gap-4 rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><ScoreCard label="Accessibility" score={activeSpeed?.accessibility} icon={Accessibility} section="accessibility" /><p className="max-w-xl text-xs leading-5 text-slate-400">Affected element selectors and snippets are included when Lighthouse provides them. Findings marked Manual check need a person to verify.</p></div><FindingList findings={activeSpeed?.accessibilityFindings ?? []} empty="Accessibility category data is unavailable for this run." /></section>
-
-              <section id="best-practices" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Browser and platform checks" title="Best Practices" description="Lighthouse browser, security, JavaScript, and platform checks for the selected device." count={activeSpeed?.bestPracticeFindings?.filter((item) => item.status !== "pass").length ?? 0} /><FindingList findings={activeSpeed?.bestPracticeFindings ?? []} empty="Best Practices category data is unavailable for this run." /></section>
-
-              <section id="seo" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Search discovery" title="SEO Report" description="Lighthouse SEO checks are not a complete SEO audit and do not measure every ranking factor." count={findingsCounts.seo} /><div className="mb-4 flex items-center gap-4 rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><ScoreCard label="Lighthouse SEO" score={activeSpeed?.seo} icon={SearchCheck} section="seo" /><p className="text-xs leading-5 text-slate-400">The page-level checks below inspect metadata and technical signals directly from the fetched HTML.</p></div><h3 className="mb-3 text-sm font-medium text-slate-200">Lighthouse SEO checks</h3><FindingList findings={activeSpeed?.seoFindings ?? []} empty="Lighthouse SEO category data is unavailable for this run." /><h3 className="mb-3 mt-6 text-sm font-medium text-slate-200">Page and technical checks</h3>{result.checks.length ? <div className="space-y-2">{result.checks.map((check) => <details key={check.id} className="finding-row rounded-xl border border-white/[0.08] bg-slate-950/20"><summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3"><span className={`h-2 w-2 rounded-full ${check.status === "pass" ? "bg-emerald-400" : check.status === "fail" ? "bg-rose-400" : "bg-amber-400"}`} /><span className="flex-1 text-sm text-slate-200">{check.label}</span><span className={`text-xs ${check.status === "pass" ? "text-emerald-300" : check.status === "fail" ? "text-rose-300" : "text-amber-300"}`}>{check.status}</span><ChevronDown size={14} className="text-slate-500" /></summary><div className="border-t border-white/[0.07] px-4 py-3 text-sm text-slate-300"><p>{check.value}</p>{check.fix && <p className="mt-2 text-slate-400">Recommendation: {check.fix}</p>}</div></details>)}</div> : unavailableFindings("No page checks were returned.")}</section>
-
-              <section id="passed" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Validated checks" title="Passed Audits" description="Successful Lighthouse checks across categories for the selected device." count={activeSpeed?.passed?.length ?? 0} /><FindingList findings={activeSpeed?.passed ?? []} empty="Passed-audit details are unavailable." expandAll={false} /></section>
-
-              <section id="technical" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="Run metadata" title="Technical Details" description="Available Lighthouse environment, throttling, request, and transfer metadata." /><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{([ ["Final URL", activeSpeed?.technical?.finalUrl], ["Requested URL", activeSpeed?.technical?.requestedUrl], ["Lighthouse version", activeSpeed?.technical?.lighthouseVersion], ["Fetch time", activeSpeed?.technical?.fetchTime], ["Form factor", activeSpeed?.technical?.formFactor], ["Request count", activeSpeed?.technical?.requestCount], ["Transfer size", formatBytes(activeSpeed?.technical?.transferBytes)], ["Response status", result.status], ["Throttling", activeSpeed?.technical?.throttling ? JSON.stringify(activeSpeed.technical.throttling) : null], ["Environment", activeSpeed?.technical?.environment ? JSON.stringify(activeSpeed.technical.environment) : null] ] as [string, unknown][]).map(([label, value]) => <div key={label} className="min-w-0 rounded-xl border border-white/[0.07] bg-slate-950/25 p-3"><p className="text-[10px] uppercase tracking-[0.13em] text-slate-500">{label}</p><p className="mt-2 break-all font-mono text-xs leading-5 text-slate-200">{value === null || value === undefined || value === "" ? "Unavailable" : typeof value === "string" ? value : String(value)}</p></div>)}</div><div className="mt-5 border-t border-white/[0.07] pt-4"><h3 className="mb-3 text-sm font-medium text-slate-200">Image delivery analysis</h3>{(result.images ?? []).length ? <div className="space-y-2">{result.images?.map((image, index) => <details key={`${image.src}-${index}`} className="finding-row rounded-xl border border-white/[0.07] bg-slate-950/25"><summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3"><span className={`h-2 w-2 rounded-full ${image.status === "pass" ? "bg-emerald-400" : image.status === "fail" ? "bg-rose-400" : "bg-amber-400"}`} /><span className="min-w-0 flex-1 truncate text-xs text-slate-200">{image.src}</span><span className="text-[10px] text-slate-500">{image.format} · {image.width ?? "?"}×{image.height ?? "?"}</span><ChevronDown size={14} className="text-slate-500" /></summary><div className="grid gap-3 border-t border-white/[0.07] p-4 sm:grid-cols-[120px_1fr]"><img src={image.src} alt={image.alt} className="h-24 w-full rounded-lg border border-white/10 bg-black/20 object-contain" /><div className="text-xs leading-5 text-slate-300"><p>Alt: {image.alt || "Missing"} · Loading: {image.loading}</p><p className="mt-1">{image.recommendation}</p>{image.issues.map((issue) => <p key={issue} className="mt-1 text-amber-200">{issue}</p>)}</div></div></details>)}</div> : <EmptyState label="No image analysis data was returned." />}</div></section>
-
-              <section id="screenshots" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
-                <SectionHeading
-                  eyebrow="Captured from the audited page"
-                  title="Screenshots & Filmstrip"
-                  description="Full browser screenshots are preferred; the final PageSpeed filmstrip frame is used when browser capture is unavailable."
-                />
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {([["Mobile screenshot", mobileScreenshot], ["Desktop screenshot", desktopScreenshot]] as [string, string | undefined][]).map(([label, screenshot]) => (
-                    <div key={label} className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-3">
-                      <div className="mb-3 flex items-center justify-between">
+                <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><ScoreCard label="Performance" score={activeSpeed?.score} icon={Gauge} section="performance" /><ScoreCard label="Accessibility" score={activeSpeed?.accessibility} icon={Accessibility} section="accessibility" /><ScoreCard label="Best Practices" score={activeSpeed?.bestPractices} icon={ShieldCheck} section="best-practices" /><ScoreCard label="SEO" score={activeSpeed?.seo} icon={SearchCheck} section="seo" /></div>
+                {activeSpeed?.error && <div role="status" className="mt-4 flex flex-col gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 text-sm leading-6 text-amber-100">
+                    <p className="font-medium">PageSpeed data unavailable for {device}</p>
+                    <p className="mt-1 break-words text-amber-100/70">{activeSpeed.error}</p>
+                    {pageSpeedTimedOut && (mobileScreenshot || desktopScreenshot) && <p className="mt-1 text-amber-100/70">The page capture succeeded, but Lighthouse did not return results before the time limit.</p>}
+                  </div>
+                  {pageSpeedTimedOut && <button type="button" onClick={() => void runAudit()} disabled={loading} className="shrink-0 rounded-lg border border-amber-200/20 px-3 py-2 text-sm text-amber-100 hover:bg-amber-100/10 disabled:cursor-not-allowed disabled:opacity-50">Retry audit</button>}
+                </div>}
+                {pageStatusIssues.length > 0 && <div className="mt-4 space-y-2">{pageStatusIssues.map((check) => <div key={check.id} className="rounded-xl border border-rose-400/10 bg-rose-400/[0.035] p-3"><div className="flex items-center justify-between gap-3"><p className="text-sm text-slate-200">{check.label}: {check.value}</p>{check.priority && <span className="text-[11px] text-rose-300">{check.priority} priority</span>}</div>{check.resource && <p className="mt-1 break-all font-mono text-xs text-slate-400">Affected URL: {check.resource}</p>}{check.fix && <p className="mt-1 text-xs leading-5 text-slate-400">Recommended solution: {check.fix}</p>}</div>)}</div>}
+                <div className="device-captures mt-6 grid gap-8 border-t border-white/[0.07] pt-5 sm:grid-cols-2">
+                  {([
+                    ["mobile", "Mobile capture", mobileScreenshot],
+                    ["desktop", "Desktop capture", desktopScreenshot],
+                  ] as [Device, string, string | undefined][]).map(([captureDevice, label, screenshot]) => (
+                    <div key={captureDevice} className="min-w-0">
+                      <div className="mb-3 flex items-center justify-between gap-3">
                         <p className="text-sm font-medium text-white">{label}</p>
-                        {screenshot && <button onClick={() => setScreenshotOpen(screenshot)} className="text-xs text-cyan-200 hover:text-white">Enlarge</button>}
+                        {screenshot ? <button type="button" onClick={() => setScreenshotOpen(screenshot)} className="text-xs text-cyan-200 hover:text-white">Enlarge</button> : <span className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Unavailable</span>}
                       </div>
                       {screenshot ? (
-                        <button onClick={() => setScreenshotOpen(screenshot)} className="block w-full overflow-hidden rounded-lg border border-white/10 bg-black/30">
-                          <img src={screenshot} alt={label} className="max-h-[460px] w-full object-contain" />
-                        </button>
-                      ) : <EmptyState label="A screenshot could not be captured for this device." />}
+                        <DevicePreview device={captureDevice} screenshot={screenshot} />
+                      ) : (
+                        <p className="text-xs text-slate-500">No capture was returned for this device.</p>
+                      )}
                     </div>
                   ))}
                 </div>
-                <h3 className="mb-3 mt-6 text-sm font-medium text-white">Lighthouse filmstrip · {device}</h3>
+              </section>
+
+              <section id="performance" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading eyebrow={`${device} lab audit`} title="Performance" />
+                <div className="mb-5 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><p className="text-xs text-slate-500">Performance score</p><p className="mt-2 font-mono text-3xl text-white">{activeSpeed?.score ?? "Unavailable"}<span className="ml-1 text-sm text-slate-500">{activeSpeed?.score !== null && activeSpeed?.score !== undefined ? "/100" : ""}</span></p><p className={`mt-2 text-xs ${scoreStatus(activeSpeed?.score).color}`}>{scoreStatus(activeSpeed?.score).label}</p></div>
+                  <div className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4"><p className="text-xs text-slate-500">Audit strategy</p><p className="mt-2 font-mono text-xl capitalize text-white">{device}</p></div>
+                </div>
+                <MetricCards speed={activeSpeed} />
+              </section>
+
+              <section id="vitals" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading eyebrow="Chrome UX Report" title="Core Web Vitals" />
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-slate-950/25 p-4">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Core Web Vitals Assessment</p>
+                    <p className="mt-1 text-xs text-slate-500">Based on Google field data at the 75th percentile</p>
+                  </div>
+                  <span className={`rounded-full border px-3 py-1 text-sm font-medium ${activeSpeed?.cwvAssessment === "passed" ? "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-300" : activeSpeed?.cwvAssessment === "failed" ? "border-rose-400/20 bg-rose-400/[0.06] text-rose-300" : "border-white/10 bg-white/[0.03] text-slate-400"}`}>
+                    {activeSpeed?.cwvAssessment === "passed" ? "Passed" : activeSpeed?.cwvAssessment === "failed" ? "Failed" : "Unavailable"}
+                  </span>
+                </div>
+                <p className="mb-3 text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                  {activeSpeed?.fieldDataSource === "url" ? "URL field data" : activeSpeed?.fieldDataSource === "origin" ? "Origin field data" : "Field data unavailable; showing lab values where available"}
+                  {activeSpeed?.fieldDataSource && " · 75th percentile"}
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {coreWebVitalKeys.map((key) => {
+                    const fieldMetric = activeSpeed?.fieldMetrics?.[key];
+                    const labMetric = activeSpeed?.metrics?.[key];
+                    const metric = typeof fieldMetric?.display === "string" || typeof fieldMetric?.value === "number"
+                      ? fieldMetric
+                      : labMetric;
+                    const isFieldMetric = metric === fieldMetric;
+                    const display = metric?.display ?? (typeof metric?.value === "number" ? String(metric.value) : "Unavailable");
+                    return (
+                      <article key={key} className="rounded-xl border border-white/[0.07] bg-slate-950/25 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="text-sm leading-5 text-slate-200">{METRIC_INFO[key].fullName} <span className="font-mono text-xs text-slate-500">({METRIC_INFO[key].label})</span></p>
+                          <span className="shrink-0 text-[10px] uppercase tracking-[0.1em] text-slate-500">{display === "Unavailable" ? "Unavailable" : isFieldMetric ? "Field" : "Lab"}</span>
+                        </div>
+                        <p className="mt-3 font-mono text-2xl text-white">{display}</p>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section id="opportunities" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="PageSpeed findings" title="Opportunities" count={activeSpeed?.opportunities?.length ?? 0} /><FindingList findings={activeSpeed?.opportunities ?? []} empty={emptyFindingsMessage(activeSpeed?.score, activeSpeed?.diagnostics?.length ? "No potential savings were reported for the remaining findings." : "No failing performance audits were reported.")} /></section>
+
+              <section id="diagnostics" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="PageSpeed findings" title="Diagnostics" count={activeSpeed?.diagnostics?.length ?? 0} /><FindingList findings={activeSpeed?.diagnostics ?? []} empty={emptyFindingsMessage(activeSpeed?.score, activeSpeed?.opportunities?.length ? "No additional findings without reported savings were returned." : "No failing performance audits were reported.")} /></section>
+
+              <section id="accessibility" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading eyebrow="PageSpeed findings" title="Accessibility Report" count={activeSpeed?.accessibilityFindings?.length ?? 0} />
+                <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(210px,0.8fr)_minmax(0,1.5fr)] xl:grid-cols-[minmax(240px,0.7fr)_minmax(0,1.8fr)]">
+                  <ScoreCard label="Accessibility" score={activeSpeed?.accessibility} icon={Accessibility} section="accessibility" />
+                  <FindingList findings={activeSpeed?.accessibilityFindings ?? []} empty={emptyFindingsMessage(activeSpeed?.accessibility, "No failing accessibility audits were reported.")} />
+                </div>
+              </section>
+
+              <section id="best-practices" className="report-section glass-panel rounded-2xl p-4 sm:p-6"><SectionHeading eyebrow="PageSpeed findings" title="Best Practices" count={activeSpeed?.bestPracticeFindings?.length ?? 0} /><FindingList findings={activeSpeed?.bestPracticeFindings ?? []} empty={emptyFindingsMessage(activeSpeed?.bestPractices, "No failing Best Practices audits were reported.")} /></section>
+
+              <section id="seo" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading eyebrow="PageSpeed findings" title="SEO Report" count={findingsCounts.seo} />
+                <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(210px,0.8fr)_minmax(0,1.5fr)] xl:grid-cols-[minmax(240px,0.7fr)_minmax(0,1.8fr)]">
+                  <ScoreCard label="Lighthouse SEO" score={activeSpeed?.seo} icon={SearchCheck} section="seo" />
+                  <FindingList findings={activeSpeed?.seoFindings ?? []} empty={emptyFindingsMessage(activeSpeed?.seo, "No failing SEO audits were reported.")} />
+                </div>
+              </section>
+
+              <section id="screenshots" className="report-section glass-panel rounded-2xl p-4 sm:p-6">
+                <SectionHeading
+                  title="Page load filmstrip"
+                />
+                <h3 className="mb-3 text-sm font-medium text-white">{device === "mobile" ? "Mobile" : "Desktop"}</h3>
                 {activeSpeed?.filmstrip?.length ? (
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div className={`filmstrip-strip filmstrip-strip-${device}`}>
                     {activeSpeed.filmstrip.map((frame, index) => (
-                      <div key={`${index}-${frame.timing}`} className="overflow-hidden rounded-lg border border-white/[0.08] bg-slate-950/30">
-                        <button onClick={() => setScreenshotOpen(frame.data)} className="block w-full">
-                          <img src={frame.data} alt={`Lighthouse filmstrip frame ${index + 1}`} className="aspect-video w-full object-cover" />
+                      <div key={`${index}-${frame.timing}`} className="filmstrip-card">
+                        <button
+                          type="button"
+                          onClick={() => setScreenshotOpen(frame.data)}
+                          className="filmstrip-image"
+                          style={{ aspectRatio: device === "mobile" ? "390 / 844" : "1440 / 900" }}
+                        >
+                          <img className="bg-white"  src={frame.data} alt={`Lighthouse ${device} filmstrip frame ${index + 1}`} />
                         </button>
-                        <p className="p-2 font-mono text-[10px] text-slate-500">{frame.timing === null ? `Frame ${index + 1}` : `${frame.timing} ms`}</p>
+                        <p className="filmstrip-timing">{frame.timing === null ? `Frame ${index + 1}` : `${frame.timing} ms`}</p>
                       </div>
                     ))}
                   </div>
                 ) : <EmptyState label="No filmstrip frames were provided by this Lighthouse run." />}
               </section>
 
-              <footer className="flex items-center justify-between border-t border-white/[0.06] py-5 text-xs text-slate-600"><button onClick={resetDashboard} className="inline-flex items-center gap-2 hover:text-slate-300"><ArrowLeft size={14} />Dashboard</button><span>SpeedAudit · Lighthouse-based report</span></footer>
+              <footer className="flex items-center justify-between border-t border-white/[0.06] py-5 text-xs text-slate-600"><button onClick={resetDashboard} className="inline-flex items-center gap-2 hover:text-slate-300"><ArrowLeft size={14} />Dashboard</button><span>AuditPilot · Lighthouse-based report</span></footer>
             </div>
           </div>
         </div>

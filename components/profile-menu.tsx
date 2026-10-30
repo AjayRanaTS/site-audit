@@ -43,7 +43,7 @@ export default function ProfileMenu({ user, onSignOut }: { user: User; onSignOut
       <button
         type="button"
         onClick={() => setOpen((isOpen) => !isOpen)}
-        className="flex h-10 w-10 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-xs font-semibold tracking-wide text-cyan-100 transition hover:border-cyan-200/60 hover:brightness-110"
+        className="profile-avatar flex h-10 w-10 items-center justify-center rounded-full border text-xs font-semibold tracking-wide transition"
         title={`${displayName} account menu`}
         aria-label={`${displayName} account menu`}
         aria-haspopup="menu"

@@ -127,13 +127,13 @@ export default function AuthModal({ open, onClose, onAuthenticated }: AuthModalP
           {error && <p role="alert" className="rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-xs leading-5 text-rose-200">{error}</p>}
           {message && <p role="status" className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] p-3 text-xs leading-5 text-emerald-200">{message}</p>}
 
-          <button type="submit" disabled={loading} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-cyan-500 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60">
+          <button type="submit" disabled={loading} className="primary-button h-10 w-full disabled:cursor-not-allowed disabled:opacity-60">
             {loading ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
           </button>
         </form>
 
         <p className="mt-5 text-center text-sm text-slate-400">
-          {mode === "login" ? "New to SpeedAudit?" : "Already have an account?"}{" "}
+          {mode === "login" ? "New to AuditPilot?" : "Already have an account?"}{" "}
           <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); setMessage(""); }} className="font-medium text-cyan-200 hover:text-white">
             {mode === "login" ? "Create account" : "Sign in"}
           </button>

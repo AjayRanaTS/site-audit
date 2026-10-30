@@ -6,7 +6,6 @@ import { ArrowLeft, CalendarClock, Check, LoaderCircle, Save, ShieldCheck, UserR
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { User } from "@supabase/supabase-js";
 import ProfileMenu from "@/components/profile-menu";
-import ThemeSwitch from "@/components/theme-switch";
 import { getUserDisplayName, getUserInitials } from "@/lib/profile";
 import { getSupabaseClient } from "@/lib/supabase/client";
 import { formatAuditHistoryError } from "@/lib/audit-history-error";
@@ -126,10 +125,9 @@ function AccountFrame({ user, signOut, title, description, children }: {
         <div className="mx-auto flex min-h-[76px] max-w-[1080px] items-center justify-between gap-4 px-5 lg:px-8">
           <Link href="/" className="flex shrink-0 items-center gap-2.5 text-white">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><UserRound size={19} /></span>
-            <span className="text-[17px] font-semibold">SpeedAudit</span>
+            <span className="text-[17px] font-semibold">AuditPilot</span>
           </Link>
           <div className="flex items-center gap-2">
-            <ThemeSwitch />
             <ProfileMenu user={user} onSignOut={signOut} />
           </div>
         </div>
@@ -137,12 +135,12 @@ function AccountFrame({ user, signOut, title, description, children }: {
       <div className="mx-auto max-w-[900px] px-5 py-10 lg:px-8">
         <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-400 transition hover:text-white"><ArrowLeft size={15} />Back to home</Link>
         <div className="mb-7 mt-7 flex items-center gap-4">
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-indigo-300/30 bg-gradient-to-br from-indigo-500/30 to-cyan-500/20 text-sm font-semibold text-cyan-100">{initials}</span>
+          <span className="account-avatar flex h-12 w-12 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">{initials}</span>
           <div><h1 className="text-2xl font-semibold text-white">{title}</h1><p className="mt-1 text-sm text-slate-400">{description}</p></div>
         </div>
         {children}
       </div>
-      <footer className="border-t border-white/[0.06] px-5 py-6 text-center text-xs text-slate-600">© 2026 SpeedAudit. Built for clearer web performance decisions.</footer>
+      <footer className="border-t border-white/[0.06] px-5 py-6 text-center text-xs text-slate-600">© 2026 AuditPilot. Built for clearer web performance decisions.</footer>
     </main>
   );
 }
@@ -247,13 +245,13 @@ export function ProfilePage() {
             <label className="block"><span className="mb-1.5 block text-xs font-medium text-slate-300">First name</span><input autoComplete="given-name" maxLength={80} required value={displayedFirstName} onChange={(event) => account.user && setEditedName({ userId: account.user.id, firstName: event.target.value, lastName: displayedLastName })} className="h-11 w-full rounded-lg border border-white/10 bg-slate-950/30 px-3 text-sm text-white outline-none focus:border-indigo-400/50" /></label>
             <label className="block"><span className="mb-1.5 block text-xs font-medium text-slate-300">Last name</span><input autoComplete="family-name" maxLength={80} required value={displayedLastName} onChange={(event) => account.user && setEditedName({ userId: account.user.id, firstName: displayedFirstName, lastName: event.target.value })} className="h-11 w-full rounded-lg border border-white/10 bg-slate-950/30 px-3 text-sm text-white outline-none focus:border-indigo-400/50" /></label>
             <div className="rounded-lg border border-white/[0.08] bg-slate-950/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Email</p><p className="mt-1 break-all text-sm text-slate-200">{account.user.email ?? "Not available"}</p></div>
-            <button type="submit" disabled={savingName} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white disabled:opacity-60">{savingName ? <LoaderCircle size={15} className="animate-spin" /> : <Save size={15} />}Save name</button>
+            <button type="submit" disabled={savingName} className="primary-button min-h-10">{savingName ? <LoaderCircle size={15} className="animate-spin" /> : <Save size={15} />}Save name</button>
           </form>
         </section>
 
         <section className="glass-panel rounded-2xl p-5 sm:p-6">
           <div className="flex items-center gap-2"><ShieldCheck size={18} className="text-cyan-300" /><h2 className="text-base font-semibold text-white">Change password</h2></div>
-          <p className="mt-1 text-sm text-slate-400">Choose a new password for your SpeedAudit account.</p>
+          <p className="mt-1 text-sm text-slate-400">Choose a new password for your AuditPilot account.</p>
           <form onSubmit={updatePassword} className="mt-5 space-y-4">
             <label className="block"><span className="mb-1.5 block text-xs font-medium text-slate-300">New password</span><input type="password" autoComplete="new-password" minLength={6} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" className="h-11 w-full rounded-lg border border-white/10 bg-slate-950/30 px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-indigo-400/50" /></label>
             <p className="text-xs leading-5 text-slate-500">You are currently signed in as {getUserDisplayName(account.user)}.</p>
@@ -344,7 +342,7 @@ export function MyTestsPage() {
                   </div>
                   <div className="flex items-center gap-4">
                     <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.06] px-2.5 py-1 text-xs text-emerald-300">{record.audit_status}</span>
-                    <button type="button" onClick={() => openReport(record)} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white">Open report</button>
+                    <button type="button" onClick={() => openReport(record)} className="primary-button">Open report</button>
                   </div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.07] pt-4 sm:grid-cols-4">
@@ -362,7 +360,7 @@ export function MyTestsPage() {
           <CalendarClock size={24} className="text-cyan-300" />
           <h2 className="mt-3 text-base font-semibold text-white">No saved audits yet</h2>
           <p className="mt-1 max-w-md text-sm leading-6 text-slate-400">Completed audits run while signed in will appear here and remain private to your account.</p>
-          <Link href="/" className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 px-4 text-sm font-semibold text-white">Start an audit</Link>
+          <Link href="/" className="primary-button mt-4">Start an audit</Link>
         </div>
       )}
     </AccountFrame>

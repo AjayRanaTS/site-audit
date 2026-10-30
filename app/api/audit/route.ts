@@ -1,42 +1,45 @@
 import { NextResponse } from "next/server";
-import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { chromium } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
-type Status = "pass" | "warn" | "fail";
+type Status = "fail";
 type Check = {
   id: string;
   label: string;
   status: Status;
   value: string;
   fix?: string;
+  priority?: "high" | "medium" | "low";
+  resource?: string;
 };
 type Metric = { display: string | null; value: number | null };
 type LighthouseFinding = {
   id: string;
   title: string;
-  description: string;
   displayValue: string | null;
   score: number | null;
   status: "pass" | "warn" | "fail" | "manual";
-  savingsMs: number;
+  priority: "high" | "medium" | "low";
+  recommendation: string | null;
+  savings: {
+    overallMs: number | null;
+    lcpMs: number | null;
+    fcpMs: number | null;
+    cls: number | null;
+    inpMs: number | null;
+    bytes: number | null;
+  };
   resources: Record<string, string | number | null>[];
 };
 type JsonRecord = Record<string, unknown>;
-type ImageAuditEntry = {
-  src: string;
-  alt: string;
-  width: number | null;
-  height: number | null;
-  format: string;
-  loading: string;
-  status: Status;
-  issues: string[];
-  recommendation: string;
+type PlatformDetection = {
+  name: string;
+  confidence: "high" | "moderate";
+  evidence: string[];
 };
 
 /* ---------- Safe fetching (blocks private addresses) ---------- */
@@ -98,38 +101,79 @@ async function safeFetch(startUrl: URL) {
   throw new Error("Too many redirects");
 }
 
-async function fetchSmall(target: URL) {
-  try {
-    const { res } = await safeFetch(target);
-    const type = res.headers.get("content-type") ?? "";
-    const text = res.ok ? (await res.text()).slice(0, 200_000) : "";
-    return { ok: res.ok, type, text };
-  } catch {
-    return { ok: false, type: "", text: "" };
-  }
-}
-
 /* ---------- Helpers ---------- */
-
-function clean(text: string) {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function robotsBlocksAll(robots: string) {
-  let inStar = false;
-  for (const raw of robots.split(/\r?\n/)) {
-    const line = raw.split("#")[0].trim().toLowerCase();
-    if (line.startsWith("user-agent:")) {
-      inStar = line.slice(11).trim() === "*";
-    } else if (inStar && line.replace(/\s/g, "") === "disallow:/") {
-      return true;
-    }
-  }
-  return false;
-}
 
 function asRecord(value: unknown): JsonRecord {
   return value !== null && typeof value === "object" ? value as JsonRecord : {};
+}
+
+async function readBodyPrefix(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  while (totalBytes < maxBytes) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = maxBytes - totalBytes;
+    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    chunks.push(chunk);
+    totalBytes += chunk.byteLength;
+    if (chunk.byteLength < value.byteLength) {
+      await reader.cancel();
+      break;
+    }
+  }
+
+  await reader.cancel();
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function detectPlatform(html: string, headers: Headers): PlatformDetection | null {
+  const signals: { name: string; patterns: RegExp[] }[] = [
+    { name: "WordPress", patterns: [/\/wp-content\//i, /\/wp-includes\//i, /name=["']generator["'][^>]*content=["'][^"']*WordPress/i, /(?:^|\n)x-powered-by:\s*WordPress/im] },
+    { name: "Shopify", patterns: [/cdn\.shopify\.com/i, /myshopify\.com/i, /\bShopify\.theme\b|shopify-section/i] },
+    { name: "Wix", patterns: [/wixstatic\.com|wixsite\.com/i, /(?:^|\n)x-wix-[^:\n]+:/im] },
+    { name: "Squarespace", patterns: [/squarespace\.com|squarespace-cdn\.com|static1\.squarespace/i, /(?:^|\n)x-squarespace-[^:\n]+:/im] },
+    { name: "HubSpot", patterns: [/js\.hs-scripts\.com|js\.hsforms\.net/i, /hs-sites\.com|hscta\.net|hsforms\.com|hscollectedforms\.net/i, /\bhubspot\b|hs-content-id|hs_cos_wrapper/i] },
+    { name: "Webflow", patterns: [/data-wf-site|webflow\.js/i, /assets\.website-files\.com/i] },
+    { name: "Next.js", patterns: [/\/_next\/static\//i, /__NEXT_DATA__|self\.__next_f\.push/i, /(?:^|\n)x-powered-by:\s*Next\.js/im] },
+    { name: "Nuxt", patterns: [/\/_nuxt\//i, /__NUXT__/i, /(?:^|\n)x-powered-by:\s*Nuxt/im] },
+    { name: "Framer", patterns: [/framerusercontent\.com|data-framer-name/i, /framer\.website/i] },
+    { name: "Drupal", patterns: [/drupalSettings|\/sites\/default\/files\//i, /name=["']generator["'][^>]*content=["'][^"']*Drupal/i] },
+    { name: "Joomla", patterns: [/name=["']generator["'][^>]*content=["'][^"']*Joomla/i, /\/media\/system\/js\//i] },
+    { name: "Ghost", patterns: [/name=["']generator["'][^>]*content=["'][^"']*Ghost/i, /\/ghost\/api\//i] },
+    { name: "React", patterns: [/data-reactroot|data-reactid/i, /\bReactDOM\.render\b|\bcreateRoot\(/i, /__REACT_DEVTOOLS_GLOBAL_HOOK__/i] },
+    { name: "Vue.js", patterns: [/data-v-[\da-f]{6,}/i, /__VUE__|__VUE_INSTANCE__/i, /\bVue\.createApp\b/i] },
+    { name: "Angular", patterns: [/ng-version=["'][^"']+["']/i, /ng-app=["']|ng-server-context=["']/i] },
+    { name: "Svelte", patterns: [/svelte-[\da-z]+/i, /__sveltekit/i] },
+  ];
+  const headerEvidence = Array.from(headers.entries())
+    .map(([name, value]) => `${name}: ${value}`)
+    .join("\n");
+  const detectableSource = `${html}\n${headerEvidence}`;
+  const match = signals
+    .map((signal) => ({
+      name: signal.name,
+      evidence: signal.patterns.reduce(
+        (matched, pattern) => matched + Number(pattern.test(detectableSource)),
+        0
+      ),
+    }))
+    .find((signal) => signal.evidence > 0);
+  if (!match) return null;
+  return {
+    name: match.name,
+    confidence: match.evidence > 1 ? "high" : "moderate",
+    evidence: [`${match.evidence} matching HTML or response marker${match.evidence === 1 ? "" : "s"}`],
+  };
 }
 
 function metric(audits: JsonRecord, id: string): Metric {
@@ -142,7 +186,137 @@ function metric(audits: JsonRecord, id: string): Metric {
   };
 }
 
-function categoryFindings(category: unknown, audits: JsonRecord): LighthouseFinding[] {
+function resourceUrl(resource: JsonRecord) {
+  const url = resource.url;
+  return typeof url === "string" ? url : null;
+}
+
+function recommendationForAudit(
+  id: string,
+  resources: JsonRecord[],
+  devicePixelRatio: number | null,
+  lcpUrls: Set<string>
+): string | null {
+  const urls = resources.map(resourceUrl).filter((url): url is string => url !== null);
+  const firstUrl = urls[0];
+  const lcpUrl = [...lcpUrls][0];
+  const target = firstUrl ? ` ${firstUrl}` : "";
+  const firstResource = resources[0];
+
+  switch (id) {
+    case "uses-optimized-images": {
+      if (!firstUrl) return null;
+      const imageType = String(firstResource.mimeType ?? "").toLowerCase();
+      const isJpegOrPng = /image\/(jpeg|png)/.test(imageType) || /\.(jpe?g|png)(?:[?#]|$)/i.test(firstUrl);
+      return `Compress${target} and replace the delivered image. Lighthouse reports the resource size and estimated byte savings below.${isJpegOrPng ? " TinyPNG or TinyJPG can compress this JPEG/PNG asset." : ""}`;
+    }
+    case "modern-image-formats":
+      return firstUrl
+        ? `Serve${target} as WebP or AVIF and retain a fallback only if your supported browsers require one.`
+        : null;
+    case "uses-responsive-images":
+    case "image-size-responsive": {
+      if (!firstUrl) return null;
+      const actualWidth = firstResource.actualWidth;
+      const actualHeight = firstResource.actualHeight;
+      const displayedWidth = firstResource.displayedWidth;
+      const displayedHeight = firstResource.displayedHeight;
+      if (
+        typeof actualWidth === "number" &&
+        typeof actualHeight === "number" &&
+        typeof displayedWidth === "number" &&
+        typeof displayedHeight === "number" &&
+        devicePixelRatio !== null
+      ) {
+        const targetWidth = Math.ceil(displayedWidth * devicePixelRatio);
+        const targetHeight = Math.ceil(displayedHeight * devicePixelRatio);
+        return `Add responsive source sizes for${target}; Lighthouse measured ${actualWidth}×${actualHeight}px intrinsic and ${displayedWidth}×${displayedHeight}px rendered. At the audited ${devicePixelRatio}× device scale, a source near ${targetWidth}×${targetHeight}px is sufficient.`;
+      }
+      return `Provide responsive source sizes for${target} so the browser can select an image closer to the rendered size. PageSpeed did not provide enough dimension data to calculate a target size.`;
+    }
+    case "unsized-images":
+      return firstUrl
+        ? `Add intrinsic width and height attributes to${target}, preserving its actual aspect ratio, so the browser can reserve space before it loads.`
+        : "Add intrinsic width and height attributes to each image element reported below, using the asset's actual dimensions to preserve its aspect ratio.";
+    case "offscreen-images":
+      return firstUrl
+        ? `Lazy-load${target}; Lighthouse identified it as offscreen in this run. Keep the LCP image eager and prioritized.`
+        : "Lazy-load only the image elements Lighthouse listed as offscreen. Do not lazy-load the LCP image.";
+    case "largest-contentful-paint-element":
+    case "largest-contentful-paint-image":
+    case "largest-contentful-paint":
+      return firstUrl || lcpUrl
+        ? `Prioritize ${firstUrl ?? lcpUrl} as the LCP resource. Ensure it is discoverable in the initial HTML and do not lazy-load it.`
+        : "The LCP element was identified, but PageSpeed did not provide its resource URL. Do not lazy-load this element; inspect its discovery and loading priority.";
+    case "lcp-discovery-insight":
+      return firstUrl || lcpUrl
+        ? `Make ${firstUrl ?? lcpUrl} discoverable from the initial HTML and prioritize its request. Do not lazy-load the LCP image.`
+        : null;
+    case "unused-javascript":
+      return firstUrl
+        ? `Reduce unused code in${target} by removing unreferenced modules or splitting code that is not needed for this page.`
+        : null;
+    case "unused-css-rules":
+      return firstUrl
+        ? `Remove unused selectors from${target}, or load the stylesheet only on routes that use them.`
+        : null;
+    case "render-blocking-resources":
+      return firstUrl
+        ? `Reduce the render-blocking work from${target}. Defer this script if it is non-critical, or keep only critical CSS in the initial render path.`
+        : null;
+    case "uses-long-cache-ttl":
+      return firstUrl
+        ? `Set a longer browser cache lifetime for${target} if it is versioned or otherwise safe to cache.`
+        : null;
+    case "uses-text-compression":
+      return firstUrl
+        ? `Enable Brotli or gzip for the text resource${target} and verify the response includes the matching Content-Encoding header.`
+        : null;
+    case "font-display":
+      return firstUrl
+        ? `Add a font-display value such as swap to the @font-face rule loading${target}.`
+        : null;
+    case "server-response-time":
+      return `The audited page${target} exceeded Lighthouse's server-response target. The API does not identify the upstream cause; inspect server processing and cache behavior for this URL before changing application code.`;
+    case "cumulative-layout-shift":
+      return resources.length > 0
+        ? "Review the listed elements that shifted during this run. Reserve their final layout space before content loads; PageSpeed has not identified a single universal CSS fix."
+        : null;
+    case "interaction-to-next-paint":
+      return firstUrl
+        ? `Review the interaction work associated with${target} and reduce the blocking task identified by Lighthouse.`
+        : null;
+    case "color-contrast":
+      return "Adjust the foreground or background color of each reported element until its computed contrast meets the required WCAG ratio.";
+    case "image-alt":
+      return "Add concise alternative text to each reported informative image. Use an empty alt attribute only for decorative images.";
+    case "button-name":
+      return "Give each reported button an accessible name using visible text or an aria-label that describes its action.";
+    case "link-name":
+      return "Give each reported link descriptive accessible text or an accessible name that identifies its destination.";
+    case "label":
+      return "Associate a visible label with each reported form control using a matching for/id pair or an accessible name.";
+    case "document-title":
+      return "Add a descriptive, page-specific <title> element to the audited document.";
+    case "html-has-lang":
+      return "Set the correct language code on the audited document's <html lang> attribute.";
+    case "heading-order":
+      return "Correct the reported heading levels so section headings follow the document's existing hierarchy.";
+    case "is-on-https":
+      return "Serve this page over HTTPS and redirect its HTTP URL to the HTTPS version.";
+    case "is-crawlable":
+      return "Remove the noindex directive from this page or its response headers only if the page should appear in search results.";
+    default:
+      return null;
+  }
+}
+
+function categoryFindings(
+  category: unknown,
+  audits: JsonRecord,
+  devicePixelRatio: number | null,
+  lcpUrls: Set<string>
+): LighthouseFinding[] {
   const categoryRecord = asRecord(category);
   const references = Array.isArray(categoryRecord.auditRefs) ? categoryRecord.auditRefs : [];
   return references
@@ -151,42 +325,105 @@ function categoryFindings(category: unknown, audits: JsonRecord): LighthouseFind
       const id = typeof reference.id === "string" ? reference.id : "";
       if (!id) return null;
       const audit = asRecord(audits[id]);
-      if (!Object.keys(audit).length || audit.scoreDisplayMode === "notApplicable") return null;
+      if (
+        !Object.keys(audit).length ||
+        audit.scoreDisplayMode === "notApplicable" ||
+        audit.scoreDisplayMode === "manual" ||
+        audit.scoreDisplayMode === "informative"
+      ) return null;
 
       const score = typeof audit.score === "number" ? audit.score : null;
+      if (score === null || score >= 0.9) return null;
       const details = asRecord(audit.details);
       const metricSavings = asRecord(audit.metricSavings);
-      const savings = Number(
-        details.overallSavingsMs ??
-        Math.max(Number(metricSavings.LCP) || 0, Number(metricSavings.FCP) || 0)
-      ) || 0;
       const items = Array.isArray(details.items) ? details.items : [];
-      const resources = items.slice(0, 12).map((itemValue) => {
+      const resources = items.map((itemValue) => {
         const item = asRecord(itemValue);
         const node = asRecord(item.node);
         const values: Record<string, string | number | null> = {};
-        for (const key of ["url", "source", "label", "resourceType", "mimeType", "transferSize", "totalBytes", "wastedBytes", "wastedMs", "duration", "totalTime", "requestStartTime", "value"]) {
+        for (const key of [
+          "url", "source", "label", "resourceType", "mimeType", "transferSize",
+          "totalBytes", "wastedBytes", "wastedMs", "duration", "totalTime",
+          "value", "displayedWidth", "displayedHeight", "actualWidth",
+          "actualHeight", "cacheLifetimeMs", "cacheTTL", "requestStartTime",
+        ]) {
           const value = item[key];
           if (typeof value === "string" || typeof value === "number") values[key] = value;
+        }
+        const request = asRecord(item.request);
+        if (typeof values.url !== "string" && typeof request.url === "string") {
+          values.url = request.url;
+        }
+        if (typeof values.url !== "string" && typeof node.url === "string") {
+          values.url = node.url;
         }
         if (typeof node.selector === "string") values.selector = node.selector;
         if (typeof node.snippet === "string") values.snippet = node.snippet;
         if (typeof node.explanation === "string") values.explanation = node.explanation;
         return values;
       });
+      const issueResources = id === "offscreen-images"
+        ? resources.filter((resource) => {
+            const url = resourceUrl(resource);
+            return !url || !lcpUrls.has(url);
+          })
+        : resources;
+      if (id === "offscreen-images" && resources.length > 0 && issueResources.length === 0) return null;
+      const overallMs = details.overallSavingsMs;
+      const lcpMs = metricSavings.LCP;
+      const fcpMs = metricSavings.FCP;
+      const cls = metricSavings.CLS;
+      const inpMs = metricSavings.INP;
+      const overallBytes = details.overallSavingsBytes;
+      const savings = {
+        overallMs: typeof overallMs === "number" && overallMs > 0 ? Math.round(overallMs) : null,
+        lcpMs: typeof lcpMs === "number" && lcpMs > 0 ? Math.round(lcpMs) : null,
+        fcpMs: typeof fcpMs === "number" && fcpMs > 0 ? Math.round(fcpMs) : null,
+        cls: typeof cls === "number" && cls > 0 ? cls : null,
+        inpMs: typeof inpMs === "number" && inpMs > 0 ? Math.round(inpMs) : null,
+        bytes: typeof overallBytes === "number" && overallBytes > 0 ? Math.round(overallBytes) : null,
+      };
+      const maxMs = Math.max(savings.overallMs ?? 0, savings.lcpMs ?? 0, savings.fcpMs ?? 0, savings.inpMs ?? 0);
+      const resourceBytes = issueResources.reduce(
+        (sum, resource) => sum + (typeof resource.wastedBytes === "number" ? resource.wastedBytes : 0),
+        0
+      );
+      const impactBytes = Math.max(savings.bytes ?? 0, resourceBytes);
+      const priority = score < 0.5 || maxMs >= 1000 || impactBytes >= 200_000
+        ? "high"
+        : score < 0.75 || maxMs >= 250 || impactBytes >= 50_000
+          ? "medium"
+          : "low";
+      const recommendation = id === "offscreen-images" && lcpUrls.size === 0
+        ? null
+        : recommendationForAudit(id, issueResources, devicePixelRatio, lcpUrls);
 
       return {
         id,
         title: typeof audit.title === "string" ? audit.title : id,
-        description: typeof audit.description === "string" ? audit.description : "",
         displayValue: typeof audit.displayValue === "string" ? audit.displayValue : null,
         score,
-        status: audit.scoreDisplayMode === "manual" ? "manual" : score === null ? "warn" : score >= 0.9 ? "pass" : score < 0.5 ? "fail" : "warn",
-        savingsMs: Math.round(savings),
-        resources,
+        status: score < 0.5 ? "fail" : "warn",
+        priority,
+        recommendation,
+        savings,
+        resources: issueResources.slice(0, 12),
       } satisfies LighthouseFinding;
     })
-    .filter((finding): finding is LighthouseFinding => finding !== null);
+    .filter((finding): finding is LighthouseFinding => finding !== null)
+    .sort((left, right) => {
+      const priorityRank = { high: 0, medium: 1, low: 2 };
+      const timingSavings = (finding: LighthouseFinding) => Math.max(
+        finding.savings.overallMs ?? 0,
+        finding.savings.lcpMs ?? 0,
+        finding.savings.fcpMs ?? 0,
+        finding.savings.inpMs ?? 0
+      );
+      const priorityDifference = priorityRank[left.priority] - priorityRank[right.priority];
+      if (priorityDifference !== 0) return priorityDifference;
+      const timingDifference = timingSavings(right) - timingSavings(left);
+      return timingDifference || (right.savings.bytes ?? 0) - (left.savings.bytes ?? 0);
+    });
 }
 
 function fieldMetric(experience: unknown, key: string, unit: "ms" | "cls"): Metric {
@@ -199,17 +436,6 @@ function fieldMetric(experience: unknown, key: string, unit: "ms" | "cls"): Metr
     return { display: cls.toFixed(3), value: cls };
   }
   return { display: `${(percentile / 1000).toFixed(1)} s`, value: percentile };
-}
-
-function detectImageFormat(src: string) {
-  const value = (src || "").split("?")[0].split("#")[0].toLowerCase();
-  if (value.includes("data:image/")) {
-    return value.match(/data:image\/([a-z0-9.+-]+)/i)?.[1] || "data";
-  }
-  if (/\.(avif|webp|png|jpg|jpeg|gif|svg|bmp|ico)$/.test(value)) {
-    return value.match(/\.(avif|webp|png|jpg|jpeg|gif|svg|bmp|ico)$/)?.[1] || "unknown";
-  }
-  return "unknown";
 }
 
 async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
@@ -225,7 +451,7 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
   api.searchParams.set("key", key);
 
   try {
-    const res = await fetch(api, { signal: AbortSignal.timeout(50000) });
+    const res = await fetch(api, { signal: AbortSignal.timeout(105000) });
     const data = asRecord(await res.json());
     if (!res.ok) {
       const errorMessage = asRecord(data.error).message;
@@ -233,49 +459,51 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
     }
 
     const lighthouse = asRecord(data.lighthouseResult);
+    if (!Object.keys(lighthouse).length) {
+      return { error: "PageSpeed response did not include Lighthouse audit data" };
+    }
     const audits = asRecord(lighthouse.audits);
     const categories = asRecord(lighthouse.categories);
+    if (!Object.keys(audits).length || !Object.keys(categories).length) {
+      return { error: "PageSpeed response did not include category scores and audit results" };
+    }
     const configSettings = asRecord(lighthouse.configSettings);
+    const screenEmulation = asRecord(configSettings.screenEmulation);
+    const devicePixelRatio = typeof screenEmulation.deviceScaleFactor === "number"
+      ? screenEmulation.deviceScaleFactor
+      : null;
     const raw = asRecord(categories.performance).score;
     const accessibilityScore = asRecord(categories.accessibility).score;
     const bestPracticesScore = asRecord(categories["best-practices"]).score;
 
-    const tips = Object.values(audits)
-      .map((auditValue) => {
-        const audit = asRecord(auditValue);
-        const details = asRecord(audit.details);
-        const metricSavings = asRecord(audit.metricSavings);
-        const savings = details.overallSavingsMs ?? Math.max(Number(metricSavings.LCP) || 0, Number(metricSavings.FCP) || 0);
-        return {
-          title: typeof audit.title === "string" ? audit.title : undefined,
-          savingsMs: Number(savings) || 0,
-          score: typeof audit.score === "number" ? audit.score : null,
-        };
-      })
-      .filter(
-        (t) =>
-          t.title &&
-          t.savingsMs >= 100 &&
-          (t.score === null || t.score === undefined || t.score < 0.9)
-      )
-      .sort((a, b) => b.savingsMs - a.savingsMs)
-      .slice(0, 5)
-      .map((t) => ({ title: t.title as string, savingsMs: Math.round(t.savingsMs) }));
-
-    const performanceInsight = [
-      typeof raw === "number" && raw < 0.7 ? "The page is under the usual performance target for organic visibility." : null,
-      typeof asRecord(audits["largest-contentful-paint"]).numericValue === "number" && Number(asRecord(audits["largest-contentful-paint"]).numericValue) > 2500 ? "Largest Contentful Paint is slow enough to delay the page feeling ready to use." : null,
-      typeof asRecord(audits["total-blocking-time"]).numericValue === "number" && Number(asRecord(audits["total-blocking-time"]).numericValue) > 200 ? "There is a measurable blocking period during page load." : null,
-      typeof asRecord(audits["cumulative-layout-shift"]).numericValue === "number" && Number(asRecord(audits["cumulative-layout-shift"]).numericValue) > 0.1 ? "Layout shifts are likely making the page look unstable while it loads." : null,
-    ].filter(Boolean) as string[];
-
-    const performanceFindings = categoryFindings(categories.performance, audits);
-    const passed = Object.entries(categories).flatMap(([categoryName, category]) =>
-      categoryFindings(category, audits)
-        .filter((finding) => finding.status === "pass")
-        .map((finding) => ({ ...finding, category: categoryName }))
+    const lcpElementItems = asRecord(asRecord(audits["largest-contentful-paint-element"]).details).items;
+    const lcpUrls = new Set(
+      (Array.isArray(lcpElementItems) ? lcpElementItems : [])
+        .map((item) => {
+          const record = asRecord(item);
+          return resourceUrl(record) ?? resourceUrl(asRecord(record.node));
+        })
+        .filter((url): url is string => url !== null)
     );
-    const fieldExperience = data.loadingExperience ?? data.originLoadingExperience;
+    const performanceFindings = categoryFindings(categories.performance, audits, devicePixelRatio, lcpUrls);
+    const urlFieldMetrics = asRecord(asRecord(data.loadingExperience).metrics);
+    const originFieldMetrics = asRecord(asRecord(data.originLoadingExperience).metrics);
+    const fieldDataSource = Object.keys(urlFieldMetrics).length > 0
+      ? "url"
+      : Object.keys(originFieldMetrics).length > 0
+        ? "origin"
+        : null;
+    const fieldExperience = fieldDataSource === "url"
+      ? data.loadingExperience
+      : fieldDataSource === "origin"
+        ? data.originLoadingExperience
+        : null;
+    const rawCwvCategory = asRecord(fieldExperience).overall_category;
+    const cwvAssessment = rawCwvCategory === "FAST"
+      ? "passed"
+      : rawCwvCategory === "AVERAGE" || rawCwvCategory === "SLOW"
+        ? "failed"
+        : null;
     const filmstripDetails = asRecord(asRecord(audits["screenshot-thumbnails"]).details);
     const filmstrip = (Array.isArray(filmstripDetails.items) ? filmstripDetails.items : [])
       .slice(0, 8)
@@ -283,10 +511,6 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
         const frame = asRecord(item);
         return typeof frame.data === "string" ? [{ data: frame.data, timing: typeof frame.timing === "number" ? frame.timing : null }] : [];
       });
-    const requestDetails = asRecord(asRecord(audits["network-requests"]).details);
-    const requests = Array.isArray(requestDetails.items) ? requestDetails.items : [];
-    const totalTransferBytes = requests.reduce((sum, item) => sum + (Number(asRecord(item).transferSize) || 0), 0);
-
     return {
       score: typeof raw === "number" ? Math.round(raw * 100) : null,
       accessibility: typeof accessibilityScore === "number" ? Math.round(accessibilityScore * 100) : null,
@@ -303,34 +527,42 @@ async function getPageSpeed(url: string, strategy: "mobile" | "desktop") {
       },
       fieldMetrics: {
         lcp: fieldMetric(fieldExperience, "LARGEST_CONTENTFUL_PAINT_MS", "ms"),
-        inp: fieldMetric(fieldExperience, "EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", "ms"),
+        inp: fieldMetric(fieldExperience, "INTERACTION_TO_NEXT_PAINT", "ms"),
         cls: fieldMetric(fieldExperience, "CUMULATIVE_LAYOUT_SHIFT_SCORE", "cls"),
+        fcp: fieldMetric(fieldExperience, "FIRST_CONTENTFUL_PAINT_MS", "ms"),
         ttfb: fieldMetric(fieldExperience, "EXPERIMENTAL_TIME_TO_FIRST_BYTE", "ms"),
       },
-      fieldDataSource: data.loadingExperience ? "url" : data.originLoadingExperience ? "origin" : null,
-      opportunities: performanceFindings.filter((finding) => finding.status !== "pass" && finding.savingsMs > 0),
-      diagnostics: performanceFindings.filter((finding) => finding.status !== "pass" && finding.savingsMs === 0),
-      accessibilityFindings: categoryFindings(categories.accessibility, audits),
-      bestPracticeFindings: categoryFindings(categories["best-practices"], audits),
-      seoFindings: categoryFindings(categories.seo, audits),
-      passed,
+      fieldDataSource,
+      cwvAssessment,
+      opportunities: performanceFindings.filter((finding) =>
+        finding.savings.overallMs !== null ||
+        finding.savings.lcpMs !== null ||
+        finding.savings.fcpMs !== null ||
+        finding.savings.inpMs !== null ||
+        finding.savings.bytes !== null ||
+        finding.resources.some((resource) => typeof resource.wastedBytes === "number" && resource.wastedBytes > 0)
+      ),
+      diagnostics: performanceFindings.filter((finding) =>
+        finding.savings.overallMs === null &&
+        finding.savings.lcpMs === null &&
+        finding.savings.fcpMs === null &&
+        finding.savings.inpMs === null &&
+        finding.savings.bytes === null &&
+        !finding.resources.some((resource) => typeof resource.wastedBytes === "number" && resource.wastedBytes > 0)
+      ),
+      accessibilityFindings: categoryFindings(categories.accessibility, audits, devicePixelRatio, lcpUrls),
+      bestPracticeFindings: categoryFindings(categories["best-practices"], audits, devicePixelRatio, lcpUrls),
+      seoFindings: categoryFindings(categories.seo, audits, devicePixelRatio, lcpUrls),
       filmstrip,
-      technical: {
-        finalUrl: lighthouse.finalDisplayedUrl ?? url,
-        requestedUrl: lighthouse.requestedUrl ?? url,
-        lighthouseVersion: lighthouse.lighthouseVersion ?? null,
-        fetchTime: lighthouse.fetchTime ?? null,
-        formFactor: configSettings.formFactor ?? strategy,
-        throttling: configSettings.throttling ?? null,
-        environment: lighthouse.environment ?? null,
-        requestCount: requests.length || null,
-        transferBytes: totalTransferBytes || null,
-      },
-      tips,
-      insight: performanceInsight,
     };
-  } catch {
-    return { error: "The speed test timed out or failed" };
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : "Unknown PageSpeed error";
+    const timedOut = cause instanceof Error && (cause.name === "TimeoutError" || /aborted due to timeout/i.test(cause.message));
+    return {
+      error: timedOut
+        ? `PageSpeed Insights did not finish within 105 seconds. Lighthouse scores and findings are unavailable for this device. Retry the audit to request fresh results.`
+        : `PageSpeed Insights request failed: ${detail}`,
+    };
   }
 }
 
@@ -425,16 +657,18 @@ export async function POST(request: Request) {
 
   try {
     const { res, finalUrl, redirects } = await safeFetch(parsed);
-    const html = (await res.text()).slice(0, 2_000_000);
-    const $ = cheerio.load(html);
+    const contentType = res.headers.get("content-type") ?? "";
+    let html = "";
+    if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {
+      html = await readBodyPrefix(res, 512 * 1024);
+    } else {
+      await res.body?.cancel();
+    }
+    const platform = detectPlatform(html, res.headers);
 
-    // Slow work runs in parallel
-    const [mobile, desktop, robots, sitemapA, sitemapB, mobileCapture, desktopCapture] = await Promise.all([
+    const [mobile, desktop, mobileCapture, desktopCapture] = await Promise.all([
       getPageSpeed(finalUrl.href, "mobile"),
       getPageSpeed(finalUrl.href, "desktop"),
-      fetchSmall(new URL("/robots.txt", finalUrl.origin)),
-      fetchSmall(new URL("/sitemap.xml", finalUrl.origin)),
-      fetchSmall(new URL("/sitemap_index.xml", finalUrl.origin)),
       captureScreenshotOrFallback(finalUrl, { width: 390, height: 844 }, "mobile"),
       captureScreenshotOrFallback(finalUrl, { width: 1440, height: 900 }, "desktop"),
     ]);
@@ -442,478 +676,23 @@ export async function POST(request: Request) {
       mobileCapture ?? getPageSpeedScreenshot(mobile),
       desktopCapture ?? getPageSpeedScreenshot(desktop),
     ];
-
-    const checks: Check[] = [];
-    const add = (
-      id: string,
-      label: string,
-      status: Status,
-      value: string,
-      fix?: string
-    ) => checks.push({ id, label, status, value, ...(fix ? { fix } : {}) });
-
-    /* Page status */
-    if (res.status >= 400) {
-      add(
-        "status",
-        "Page status",
-        "fail",
-        `Returns ${res.status}`,
-        "Search engines cannot index a page that returns an error. Make sure this URL loads normally. Some sites also block automated tools, which can cause this."
-      );
-    } else {
-      add("status", "Page status", "pass", `Loads normally (${res.status})`);
-    }
-
-    /* HTTPS */
-    if (finalUrl.protocol === "https:") {
-      add("https", "Secure connection", "pass", "Uses HTTPS");
-    } else {
-      add(
-        "https",
-        "Secure connection",
-        "fail",
-        "Uses HTTP",
-        "Serve the site over HTTPS and redirect all http addresses to https."
-      );
-    }
-
-    /* Indexing */
-    const robotsMeta = ($('meta[name="robots"]').attr("content") ?? "").toLowerCase();
-    const robotsHeader = (res.headers.get("x-robots-tag") ?? "").toLowerCase();
-    if (robotsMeta.includes("noindex") || robotsHeader.includes("noindex")) {
-      add(
-        "indexing",
-        "Search engine indexing",
-        "fail",
-        "Blocked by noindex",
-        "This page tells search engines not to list it. Remove the noindex setting if you want it to appear in search results."
-      );
-    } else {
-      add("indexing", "Search engine indexing", "pass", "Allowed");
-    }
-
-    /* Title */
-    const title = clean($("title").first().text());
-    if (!title) {
-      add(
-        "title",
-        "Page title",
-        "fail",
-        "Not set",
-        "Add a unique title tag of 30 to 60 characters that includes your main keyword."
-      );
-    } else if (title.length > 60) {
-      add(
-        "title",
-        "Page title",
-        "warn",
-        `${title} (${title.length} characters)`,
-        "Search results cut titles after about 60 characters. Shorten it and put the main keyword near the start."
-      );
-    } else if (title.length < 30) {
-      add(
-        "title",
-        "Page title",
-        "warn",
-        `${title} (${title.length} characters)`,
-        "This title is short. Use 30 to 60 characters to describe the page and include your main keyword."
-      );
-    } else {
-      add("title", "Page title", "pass", `${title} (${title.length} characters)`);
-    }
-
-    /* Meta description */
-    const description = clean($('meta[name="description"]').attr("content") ?? "");
-    if (!description) {
-      add(
-        "description",
-        "Meta description",
-        "fail",
-        "Not set",
-        "Add a meta description of 70 to 160 characters. It is often shown under your title in search results."
-      );
-    } else if (description.length > 160) {
-      add(
-        "description",
-        "Meta description",
-        "warn",
-        `${description} (${description.length} characters)`,
-        "Keep the description under 160 characters so it is not cut off in search results."
-      );
-    } else if (description.length < 70) {
-      add(
-        "description",
-        "Meta description",
-        "warn",
-        `${description} (${description.length} characters)`,
-        "This description is short. Use 70 to 160 characters to explain what the page offers."
-      );
-    } else {
-      add(
-        "description",
-        "Meta description",
-        "pass",
-        `${description} (${description.length} characters)`
-      );
-    }
-
-    /* H1 */
-    const h1s = $("h1")
-      .map((_, el) => clean($(el).text()))
-      .get()
-      .filter(Boolean);
-    const emptyH1 = $("h1").length - h1s.length;
-    if (h1s.length === 0) {
-      add(
-        "h1",
-        "Main heading (H1)",
-        "fail",
-        emptyH1 > 0 ? "H1 exists but is empty" : "None found",
-        "Add one H1 that clearly describes the page. If your H1 is a logo image, add real text instead."
-      );
-    } else if (h1s.length > 1) {
-      add(
-        "h1",
-        "Main heading (H1)",
-        "warn",
-        `${h1s.length} found: ${h1s[0]}`,
-        "Use a single H1 per page and use H2 to H6 for the other headings."
-      );
-    } else {
-      add("h1", "Main heading (H1)", "pass", h1s[0]);
-    }
-
-    /* H2 */
-    const h2Count = $("h2")
-      .map((_, el) => clean($(el).text()))
-      .get()
-      .filter(Boolean).length;
-    if (h2Count === 0) {
-      add(
-        "h2",
-        "Subheadings (H2)",
-        "warn",
-        "None found",
-        "Break the content into sections with H2 headings. It helps readers scan the page and helps search engines understand the topics."
-      );
-    } else {
-      add("h2", "Subheadings (H2)", "pass", `${h2Count} found`);
-    }
-
-    /* Canonical */
-    const canonicalHref = $('link[rel="canonical"]').attr("href");
-    if (!canonicalHref) {
-      add(
-        "canonical",
-        "Canonical URL",
-        "warn",
-        "Not set",
-        "Add a canonical link tag so search engines know the preferred address of this page and do not treat duplicates as separate pages."
-      );
-    } else {
-      let differs = false;
-      try {
-        const c = new URL(canonicalHref, finalUrl);
-        differs = c.href.replace(/\/$/, "") !== finalUrl.href.replace(/\/$/, "");
-      } catch {
-        differs = true;
-      }
-      if (differs) {
-        add(
-          "canonical",
-          "Canonical URL",
-          "warn",
-          canonicalHref,
-          "The canonical address points somewhere other than this page. Make sure that is intended."
-        );
-      } else {
-        add("canonical", "Canonical URL", "pass", canonicalHref);
-      }
-    }
-
-    /* Viewport */
-    const viewport = $('meta[name="viewport"]').attr("content");
-    if (!viewport) {
-      add(
-        "viewport",
-        "Mobile viewport",
-        "fail",
-        "Not set",
-        "Add a viewport meta tag so the page displays properly on phones. Google ranks pages mostly by their mobile version."
-      );
-    } else {
-      add("viewport", "Mobile viewport", "pass", viewport);
-    }
-
-    /* Language */
-    const lang = $("html").attr("lang");
-    if (!lang) {
-      add(
-        "lang",
-        "Page language",
-        "warn",
-        "Not set",
-        "Set the lang attribute on the html tag, for example lang=\"en\". It helps search engines and screen readers."
-      );
-    } else {
-      add("lang", "Page language", "pass", lang);
-    }
-
-    /* Open Graph */
-    const ogMissing = ["og:title", "og:description", "og:image"].filter(
-      (p) => !$(`meta[property="${p}"]`).attr("content")
-    );
-    if (ogMissing.length > 0) {
-      add(
-        "og",
-        "Social sharing tags",
-        "warn",
-        `Missing ${ogMissing.join(", ")}`,
-        "Add Open Graph tags so links look good when shared on social media and chat apps."
-      );
-    } else {
-      add("og", "Social sharing tags", "pass", "Title, description and image are set");
-    }
-
-    /* Structured data */
-    const ldCount = $('script[type="application/ld+json"]').length;
-    if (ldCount === 0) {
-      add(
-        "schema",
-        "Structured data",
-        "warn",
-        "None found",
-        "Add schema.org structured data (JSON-LD), such as LocalBusiness or Organization, to help search engines understand the business."
-      );
-    } else {
-      add("schema", "Structured data", "pass", `${ldCount} JSON-LD block${ldCount > 1 ? "s" : ""}`);
-    }
-
-    /* Heading structure */
-    const headingOrder = Array.from($("h1, h2, h3, h4, h5, h6")).map((el) => Number((el.tagName || "").replace("H", "")) || 0);
-    const hasSkippedHeading = headingOrder.some((level, idx) => idx > 0 && level > headingOrder[idx - 1] + 1);
-    if (hasSkippedHeading) {
-      add(
-        "heading-structure",
-        "Heading structure",
-        "warn",
-        "Headings jump levels",
-        "Keep heading levels in order (for example H1 > H2 > H3) so the content hierarchy is easier to follow for readers and crawlers."
-      );
-    } else {
-      add("heading-structure", "Heading structure", "pass", "Heading order is consistent");
-    }
-
-    /* Social follow-up tags */
-    const twitterTags = ["twitter:card", "twitter:title", "twitter:description"]; 
-    const missingTwitterTags = twitterTags.filter((p) => !$(`meta[name="${p}"]`).length && !$(`meta[property="${p}"]`).length);
-    if (missingTwitterTags.length > 0) {
-      add(
-        "twitter",
-        "Social sharing tags",
-        "warn",
-        `Missing ${missingTwitterTags.join(", ")}`,
-        "Add basic Twitter card metadata so previews are stronger when the page is shared in social feeds."
-      );
-    } else {
-      add("twitter", "Social sharing tags", "pass", "Twitter card metadata is present");
-    }
-
-    /* Image audit */
-    const imageEntries: ImageAuditEntry[] = $("img")
-      .toArray()
-      .map((el) => {
-        const $img = $(el);
-        const rawSrc = ($img.attr("src") ?? "").trim();
-        const src = rawSrc ? new URL(rawSrc, finalUrl).href : "";
-        const alt = clean($img.attr("alt") ?? "");
-        const width = Number($img.attr("width")) || null;
-        const height = Number($img.attr("height")) || null;
-        const loading = ($img.attr("loading") ?? "not set").toLowerCase();
-        const format = detectImageFormat(rawSrc || "");
-        const issues: string[] = [];
-
-        if (!rawSrc) issues.push("Image source is missing.");
-        if (!alt) issues.push("Alt text is missing for accessibility and image search.");
-        if (loading === "not set") issues.push("The image is not explicitly lazy-loaded or eager-loaded.");
-        if (loading === "eager" && !src.includes("logo") && !src.includes("hero")) {
-          issues.push("This image is eagerly loaded even though it may be below the fold.");
-        }
-        if ((width && width > 2000) || (height && height > 2000)) {
-          issues.push("The image is oversized for its layout and can slow the page down.");
-        }
-        if (format === "svg" && !alt) {
-          issues.push("SVG images should include accessible text or a proper title/description.");
-        }
-
-        const status: Status = issues.length === 0 ? "pass" : issues.length >= 3 ? "fail" : "warn";
-        const recommendation =
-          issues.length === 0
-            ? "This image is well-formed and should load efficiently with the current markup."
-            : issues.length >= 3
-              ? "Reduce the image size, add alt text, and lazy-load non-critical images to improve page speed and accessibility."
-              : "Add the missing metadata and compress the asset where possible so the page stays light and accessible.";
-
-        return {
-          src: src || rawSrc || "missing-image",
-          alt: alt || "No alt text",
-          width,
-          height,
-          format,
-          loading: loading === "not set" ? "auto" : loading,
-          status,
-          issues,
-          recommendation,
-        };
-      })
-      .filter((img) => img.src !== "missing-image");
-
-    const imageProblems = imageEntries.filter((img) => img.status !== "pass");
-    if (imageEntries.length === 0) {
-      add(
-        "image-audit",
-        "Images",
-        "warn",
-        "No images found",
-        "There are no visible images on this page. Add relevant visuals only when they support the content."
-      );
-    } else if (imageProblems.length === 0) {
-      add("image-audit", "Images", "pass", `${imageEntries.length} image${imageEntries.length > 1 ? "s" : ""} look healthy`);
-    } else {
-      add(
-        "image-audit",
-        "Images",
-        imageProblems.length >= imageEntries.length / 2 ? "fail" : "warn",
-        `${imageProblems.length} of ${imageEntries.length} images need attention`,
-        "Review image sizes, lazy-loading, and alt text to improve accessibility and delivery speed."
-      );
-    }
-
-    /* Links */
-    const host = (h: string) => h.replace(/^www\./, "").toLowerCase();
-    const pageHost = host(finalUrl.hostname);
-    let internal = 0;
-    let external = 0;
-    $("a[href]").each((_, el) => {
-      const href = ($(el).attr("href") ?? "").trim();
-      if (!href || href.startsWith("#") || /^(mailto:|tel:|javascript:)/i.test(href)) return;
-      try {
-        const u = new URL(href, finalUrl);
-        if (!["http:", "https:"].includes(u.protocol)) return;
-        if (host(u.hostname) === pageHost) internal++;
-        else external++;
-      } catch {
-        /* ignore invalid links */
-      }
-    });
-    if (internal === 0) {
-      add(
-        "links",
-        "Internal links",
-        "warn",
-        `${internal} internal, ${external} external`,
-        "Link to related pages on your own site so visitors and search engines can move around easily."
-      );
-    } else {
-      add("links", "Internal links", "pass", `${internal} internal, ${external} external`);
-    }
-
-    /* Content length */
-    const $body = $("body").clone();
-    $body.find("script, style, noscript, template").remove();
-    const bodyText = clean($body.text());
-    const words = bodyText ? bodyText.split(" ").length : 0;
-    if (words < 300) {
-      add(
-        "words",
-        "Content length",
-        "warn",
-        `About ${words} words`,
-        "Pages with very little text rarely rank well. Add helpful content that answers visitor questions. Text loaded with JavaScript may not be counted here."
-      );
-    } else {
-      add("words", "Content length", "pass", `About ${words} words`);
-    }
-
-    /* Favicon */
-    const faviconHref = $('link[rel~="icon"]').first().attr("href");
-    let favicon: string | null = null;
-    if (faviconHref) {
-      try {
-        favicon = new URL(faviconHref, finalUrl).href;
-      } catch {
-        favicon = null;
-      }
-    }
-    if (!favicon) {
-      add(
-        "favicon",
-        "Favicon",
-        "warn",
-        "Not found",
-        "Add a favicon so your brand shows in browser tabs and in search results on phones."
-      );
-    } else {
-      add("favicon", "Favicon", "pass", "Found");
-    }
-
-    /* robots.txt */
-    const robotsOk = robots.ok && !robots.type.includes("html");
-    if (!robotsOk) {
-      add(
-        "robots",
-        "robots.txt",
-        "warn",
-        "Not found",
-        "Add a robots.txt file at the root of the site to guide search engine crawlers and point them to your sitemap."
-      );
-    } else if (robotsBlocksAll(robots.text)) {
-      add(
-        "robots",
-        "robots.txt",
-        "fail",
-        "Blocks all crawlers",
-        "robots.txt disallows the whole site. Remove the Disallow: / rule if you want to appear in search results."
-      );
-    } else {
-      add("robots", "robots.txt", "pass", "Found");
-    }
-
-    /* Sitemap */
-    const isXml = (r: { ok: boolean; type: string; text: string }) =>
-      r.ok && (r.type.includes("xml") || /<(urlset|sitemapindex)/i.test(r.text.slice(0, 2000)));
-    const declared = robotsOk ? robots.text.match(/^\s*sitemap:\s*(\S+)/im)?.[1] : undefined;
-    const sitemap =
-      declared ??
-      (isXml(sitemapA) ? "/sitemap.xml" : isXml(sitemapB) ? "/sitemap_index.xml" : undefined);
-    if (!sitemap) {
-      add(
-        "sitemap",
-        "XML sitemap",
-        "warn",
-        "Not found",
-        "Add an XML sitemap and submit it in Google Search Console so new pages are found faster."
-      );
-    } else {
-      add("sitemap", "XML sitemap", "pass", sitemap);
-    }
-
-    /* SEO score: pass = 1, warn = 0.5, fail = 0 */
-    const points = checks.reduce(
-      (sum, c) => sum + (c.status === "pass" ? 1 : c.status === "warn" ? 0.5 : 0),
-      0
-    );
-    const seoScore = Math.round((points / checks.length) * 100);
-
+    const checks: Check[] = res.status >= 400
+      ? [{
+          id: "status",
+          label: "HTTP response",
+          status: "fail",
+          value: `HTTP ${res.status}`,
+          priority: "high",
+          resource: finalUrl.href,
+          fix: `The audited URL returned HTTP ${res.status}. Resolve that response for this URL before treating it as a successful page load.`,
+        }]
+      : [];
     return NextResponse.json({
       url: finalUrl.href,
       status: res.status,
       redirects,
-      seoScore,
-      favicon,
+      platform,
       checks,
-      images: imageEntries,
       screenshots: {
         mobile: screenshots[0],
         desktop: screenshots[1],
