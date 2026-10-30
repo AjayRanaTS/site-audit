@@ -235,3 +235,22 @@ export function ResultSidebar({ active, collapsed, setCollapsed, drawerOpen, set
     {drawerOpen && <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm lg:hidden" onClick={() => setDrawerOpen(false)}><aside className="glass-panel flex h-full w-[min(86vw,310px)] flex-col" onClick={(event) => event.stopPropagation()}>{content}</aside></div>}
   </>;
 }
+
+export function AuditReportFooter({ onHome }: { onHome: () => void }) {
+  return (
+    <footer className="border-t border-white/[0.07] py-6">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+        <button type="button" onClick={onHome} className="inline-flex items-center gap-2.5 self-start text-white">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/20 text-cyan-300"><Zap size={17} fill="currentColor" /></span>
+          <span className="font-semibold">AuditPilot</span>
+        </button>
+        <nav className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500" aria-label="Report footer">
+          {NAV_ITEMS.map(({ id, label }) => (
+            <a key={id} href={`#${id}`} className="footer-nav-link">{label}</a>
+          ))}
+        </nav>
+      </div>
+      <p className="mt-5 text-xs text-slate-600">AuditPilot · Lighthouse-based report</p>
+    </footer>
+  );
+}

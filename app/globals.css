@@ -208,6 +208,20 @@ span[class*="rounded-full"]:not([class*="h-"]):not([class*="w-"]) {
   color: var(--foreground) !important;
 }
 
+.footer-nav-link {
+  display: inline-flex;
+  cursor: pointer;
+  text-underline-offset: 4px;
+  transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+
+.footer-nav-link:hover,
+.footer-nav-link:focus-visible {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--foreground);
+}
+
 .site-header a,
 .site-header button {
   border-radius: 4px !important;

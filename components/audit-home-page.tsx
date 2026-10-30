@@ -122,15 +122,15 @@ export default function AuditHomePage({
         </div>
       </section>
 
-      <section id="features" className="relative border-t border-white/[0.06] bg-[#0b1428]/65 px-5 py-16 lg:px-8">
-        <div className="mx-auto max-w-[1320px]">
+      <section id="features" className="relative border-t border-white/[0.06] bg-[#0b1428]/65 py-16">
+        <div className="mx-auto w-full max-w-[1280px] px-5 lg:px-8">
           <div className="mb-8 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">One clear report</p><h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">The details that move your site forward</h2></div><p className="max-w-md text-sm leading-6 text-slate-400">Evidence-led insights from PageSpeed and the page itself, organized by device and category.</p></div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{FEATURES.map(({ icon: Icon, title, text, color }) => <article key={title} className="feature-card rounded-2xl border border-white/[0.07] bg-white/[0.025] p-5"><span className={`inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.045] ${color}`}><Icon size={20} /></span><h3 className="mt-5 text-sm font-semibold text-white">{title}</h3><p className="mt-2 text-sm leading-6 text-slate-400">{text}</p></article>)}</div>
         </div>
       </section>
 
-      <section id="pricing" className="relative border-y border-white/[0.06] bg-[#0b1428]/45 px-5 py-16 lg:px-8">
-        <div className="mx-auto max-w-[1320px]">
+      <section id="pricing" className="relative border-y border-white/[0.06] bg-[#0b1428]/45 py-16">
+        <div className="mx-auto w-full max-w-[1280px] px-5 lg:px-8">
           <div className="mx-auto mb-9 max-w-2xl text-center"><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">Simple, transparent plans</p><h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">Pricing that grows with your audits</h2><p className="mt-3 text-sm leading-6 text-slate-400">Choose the monthly audit allowance and export options that fit your workflow.</p></div>
           <div className="grid gap-4 md:grid-cols-3">
             {PRICING_PLANS.map((plan) => (
@@ -145,7 +145,7 @@ export default function AuditHomePage({
         </div>
       </section>
 
-      <section id="recent" className="mx-auto grid max-w-[1320px] gap-8 px-5 py-16 lg:grid-cols-[1.2fr_.8fr] lg:px-8">
+      <section id="recent" className="mx-auto grid w-full max-w-[1280px] gap-8 px-5 py-16 lg:grid-cols-[1.2fr_.8fr] lg:px-8">
         <div>
           <div className="flex flex-wrap items-end justify-between gap-4"><SectionHeading eyebrow="Reports" title="Recent audits" description={user ? "Your two latest saved website audits." : "Your latest audit is available during this browser session."} />{user && <Link href="/my-tests" className="secondary-button inline-flex shrink-0 items-center gap-2">View all <ArrowUpRight size={15} /></Link>}</div>
           <div className="recent-audit-card space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5">
@@ -173,7 +173,24 @@ export default function AuditHomePage({
         <div id="dashboard" className="recent-cta rounded-2xl border border-white/[0.08] bg-white/[0.025] p-6"><p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">Ready when you are</p><h2 className="mt-3 text-xl font-semibold text-white">Know what is slowing your site down.</h2><p className="mt-2 text-sm leading-6 text-slate-400">Run a mobile and desktop audit to get a prioritized, evidence-based report.</p><button onClick={onStartAudit} className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-white">Start your audit <ArrowUpRight size={15} /></button></div>
       </section>
 
-      <footer className="border-t border-white/[0.06] px-5 py-6 text-center text-xs text-slate-600">© 2026 AuditPilot. Built for clearer web performance decisions.</footer>
+      <footer className="border-t border-white/[0.06] py-8">
+        <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 px-5 sm:flex-row sm:items-center sm:justify-between lg:px-8">
+          <div>
+            <a href="#home" className="inline-flex items-center gap-2.5 text-white">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-cyan-300"><Zap size={19} fill="currentColor" /></span>
+              <span className="text-[17px] font-semibold">AuditPilot</span>
+            </a>
+            <p className="mt-3 text-xs text-slate-500">Built for clearer web performance decisions.</p>
+          </div>
+          <nav className="flex flex-wrap gap-x-6 gap-y-3 text-sm text-slate-400" aria-label="Footer navigation">
+            <a href="#home" className="footer-nav-link">Home</a>
+            <a href="#features" className="footer-nav-link">Features</a>
+            <a href="#pricing" className="footer-nav-link">Pricing</a>
+            <a href="#recent" className="footer-nav-link">Reports</a>
+          </nav>
+        </div>
+        <p className="mx-auto mt-6 w-full max-w-[1280px] border-t border-white/[0.06] px-5 pt-5 text-center text-xs text-slate-600 lg:px-8">© 2026 AuditPilot. All rights reserved.</p>
+      </footer>
     </>
   );
 }

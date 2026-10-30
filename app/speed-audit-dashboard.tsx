@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ArrowLeft,
   Accessibility,
   ExternalLink,
   Gauge,
@@ -20,6 +19,7 @@ import AuditReportToolbar from "@/components/audit-report-toolbar";
 import {
   DevicePreview,
   DeviceSelector,
+  AuditReportFooter,
   METRIC_INFO,
   NAV_ITEMS,
   ResultSidebar,
@@ -767,7 +767,7 @@ export default function SpeedAuditDashboard() {
                 onOpenScreenshot={setScreenshotOpen}
               />
 
-              <footer className="flex items-center justify-between border-t border-white/[0.06] py-5 text-xs text-slate-600"><button onClick={resetDashboard} className="inline-flex items-center gap-2 hover:text-slate-300"><ArrowLeft size={14} />Dashboard</button><span>AuditPilot · Lighthouse-based report</span></footer>
+              <AuditReportFooter onHome={resetDashboard} />
             </div>
           </div>
         </div>
